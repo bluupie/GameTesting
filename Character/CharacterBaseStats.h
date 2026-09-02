@@ -50,6 +50,7 @@ class Character {
     int m_experience;
     int m_experienceRequired;
     Attributes m_baseAttributes;
+    CoreStats m_coreStats;
 
     public:
     Character(std::string name, CharacterClass charClass) 
@@ -69,7 +70,13 @@ class Character {
     };
 
     void levelUp(int levels = 1) {
-        m_level += levels;
+        if(m_level = 100){
+            m_level += levels;
+            m_coreStats.maximumLife + 12;
+            m_coreStats.maximumMana + 6;
+        } else{
+            
+        };
     };
 
     void gainExperience(int experienceGained){
@@ -103,6 +110,7 @@ class Character {
         int evasionFromDex = (m_baseAttributes.Dexterity / 10) * 5;
 
         // Static baseline + level bonus + attribute bonus
+        // Finish adding baseline stats
         stats.maximumLife = 50 + levelLifeBonus + lifeFromStr;
         stats.maximumMana = 40 + levelManaBonus + manaFromInt;
         stats.baseEvasion = 15 + levelEvasionBonus;
