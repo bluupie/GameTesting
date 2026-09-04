@@ -176,6 +176,23 @@ struct FAffixDefinition : public FTableRowBase
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
     FName AffixGroup;
 
+    // Free-form categorization tags, e.g. "Physical", "Elemental",
+    // "Resistance", "Regen", "Resource" — unrelated to AffixGroup's
+    // mutual-exclusion role. An affix can carry several (a Fire Resistance
+    // affix might be tagged both "Resistance" and "Elemental"). Meant for
+    // querying/filtering — a crafting currency that only rerolls
+    // "Elemental" affixes, a UI filter, etc. — not for roll-time exclusion.
+    // FName rather than an enum so new tags can be added by editing data
+    // (a UDataTable row, once the pool is authored that way) without a
+    // recompile, same reasoning as AffixGroup.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
+    TArray<FName> Tags;
+
+    bool HasTag(FName Tag) const
+    {
+        return Tags.Contains(Tag);
+    }
+
     // Bitmask of eligible EGearSlot values, built with GetGearSlotBit() /
     // UGearAffixFunctionLibrary::MakeSlotMask(). int32 (not uint32 — see
     // GetGearSlotBit's comment) with the Bitmask meta so the editor renders

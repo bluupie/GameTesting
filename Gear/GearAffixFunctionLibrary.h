@@ -1,152 +1,349 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Kismet/BlueprintFunctionLibrary.h"
-#include "Gear/GearAffixTypes.h"
-#include "GearAffixFunctionLibrary.generated.h"
+#include "Engine/DataTable.h"
+#include "BaseCharacterStats.h"   // EStatType, FModifierPool, FStatModifier
+#include "GearAffixTypes.generated.h"
 
-UCLASS()
-class UGearAffixFunctionLibrary : public UBlueprintFunctionLibrary
+// ---------------------------------------------------------------------------
+// Affix Type / Slot / Rarity
+// ---------------------------------------------------------------------------
+
+UENUM(BlueprintType)
+enum class EAffixType : uint8
+{
+    Prefix,
+    Suffix
+};
+
+// Whether an affix modifies a derived FCharacterStats value (via
+// FModifierPool / EStatType) or a base FBaseAttributes value directly
+// (Strength/Dexterity/Intelligence aren't part of EStatType — they're
+// inputs to the Recalculate formulas, not outputs of them).
+UENUM(BlueprintType)
+enum class EAffixTargetType : uint8
+{
+    Stat,
+    Attribute
+};
+
+UENUM(BlueprintType)
+enum class EBaseAttributeType : uint8
+{
+    Strength,
+    Dexterity,
+    Intelligence
+};
+
+UENUM(BlueprintType, meta = (Bitmask))
+enum class EGearSlot : uint8
+{
+    Weapon,
+    Shield,
+    Quiver,
+    Helmet,
+    Chest,
+    Gloves,
+    Boots,
+    Belt,
+    Amulet,
+    Ring
+};
+
+// Bit for this slot within an AllowedSlotsMask. Stored/exposed as int32
+// (not uint32 — Blueprint has no native unsigned-32 type, so UHT won't
+// expose a uint32 UPROPERTY/UFUNCTION to BP). EGearSlot has 10 members, so
+// this comfortably fits within int32's 31 usable bits with room to grow.
+FORCEINLINE int32 GetGearSlotBit(EGearSlot Slot)
+{
+    return 1 << static_cast<uint8>(Slot);
+}
+
+UENUM(BlueprintType)
+enum class EItemRarity : uint8
+{
+    Normal,     // 0 affixes — crafting base
+    Magic,      // always exactly 1 prefix + 1 suffix
+    Rare,       // 2 prefixes + 2 suffixes by default, chance to hit 3 + 3
+    Legendary   // always exactly 3 prefixes + 3 suffixes
+};
+
+// How a rolled affix value is fed into FModifierPool. Mirrors FStatModifier's
+// Flat / Percent / MorePercent fields on the existing character stats system.
+UENUM(BlueprintType)
+enum class EModifierApplication : uint8
+{
+    Flat,       // FModifierPool::AddFlat        e.g. +37 to Maximum Life
+    Increased,  // FModifierPool::AddIncreased   e.g. +24% increased Physical Damage (additive with other Increased)
+    More        // FModifierPool::AddMore        e.g. 15% more Damage (multiplicative, rare/special affixes only)
+};
+
+// ---------------------------------------------------------------------------
+// Affix Tier
+// ---------------------------------------------------------------------------
+
+// One tier's roll window for a given affix. TierNumber 1 = best (highest roll,
+// highest item level requirement), TierNumber 9 = worst (lowest roll, no
+// item level requirement). Example: Added Physical Damage — Tier 9 rolls
+// 1-4, Tier 1 rolls 100-200.
+USTRUCT(BlueprintType)
+struct FAffixTier
 {
     GENERATED_BODY()
 
-public:
-    // How many prefixes/suffixes an item of a given rarity rolls. Normal
-    // items always roll 0 (crafting bases only). Magic items always roll
-    // exactly 1 prefix + 1 suffix. Rare items roll 2 prefixes + 2 suffixes
-    // by default, with a chance (see GenerateGearItem's RareFullAffixChance)
-    // to hit the full 3 + 3 instead. Legendary items always roll the full
-    // 3 + 3.
-    UFUNCTION(BlueprintPure, Category = "Gear Affixes")
-    static void GetAffixCountRangeForRarity(EItemRarity Rarity, int32& OutMinPrefixes, int32& OutMaxPrefixes,
-                                             int32& OutMinSuffixes, int32& OutMaxSuffixes);
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
+    int32 TierNumber = 9;
 
-    // Filters AffixPool down to affixes valid for this slot/type that have
-    // at least one tier unlocked at ItemLevel. Returns INDICES into AffixPool
-    // rather than copies — each FAffixDefinition carries two nested arrays
-    // (AllowedSlots-turned-mask aside, Tiers is still an array), so copying
-    // full structs on every roll would deep-copy that data repeatedly.
-    UFUNCTION(BlueprintPure, Category = "Gear Affixes")
-    static TArray<int32> GetEligibleAffixes(const TArray<FAffixDefinition>& AffixPool, EAffixType AffixType,
-                                             EGearSlot Slot, int32 ItemLevel);
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
+    float MinRoll = 0.0f;
 
-    // Weighted-random pick of a tier index (into Affix.Tiers) among the
-    // tiers unlocked at ItemLevel. Returns -1 if none are unlocked.
-    // Allocation-free: walks Affix.Tiers directly with a single-pass
-    // weighted reservoir pick instead of building an intermediate weights array.
-    UFUNCTION(BlueprintPure, Category = "Gear Affixes")
-    static int32 RollTierIndexForAffix(const FAffixDefinition& Affix, int32 ItemLevel);
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
+    float MaxRoll = 0.0f;
 
-    UFUNCTION(BlueprintPure, Category = "Gear Affixes")
-    static float RollAffixValue(const FAffixTier& Tier);
+    // Minimum item level required for this tier to be eligible to roll at all.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
+    int32 RequiredItemLevel = 1;
 
-    // Generates a full gear item: picks distinct-group affixes, rolls a
-    // tier for each (gated by ItemLevel), rolls a value within that tier.
-    // RareFullAffixChance is the odds a Rare item rolls the full 3 prefixes
-    // + 3 suffixes instead of the standard 2 + 2 (ignored for other rarities).
-    UFUNCTION(BlueprintCallable, Category = "Gear Affixes")
-    static FGearItem GenerateGearItem(FName ItemId, const FString& ItemName, EGearSlot Slot, int32 ItemLevel,
-                                       EItemRarity Rarity, const TArray<FAffixDefinition>& AffixPool,
-                                       float RareFullAffixChance = 0.2f);
+    // Relative chance this tier is chosen among the tiers currently unlocked
+    // for the item's level. Higher-value (better) tiers should use lower
+    // weights so they're rarer — see the example table in the function
+    // library for a worked progression.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
+    float Weight = 1.0f;
+};
 
-    // Converts a rolled item's affixes into a derived-stat pool plus base
-    // attribute bonuses, ready to apply to FBaseAttributes and feed into
-    // FCharacterStats::Recalculate. AffixPool is needed to look up each
-    // rolled affix's target/application from its AffixId — this does a
-    // linear scan per affix, fine for occasional calls (equip, tooltip). For
-    // a large pool called every frame, build an index once with
-    // BuildAffixIndex() and use BuildModifierPoolFromGearIndexed instead.
-    UFUNCTION(BlueprintCallable, Category = "Gear Affixes")
-    static FGearStatContribution BuildModifierPoolFromGear(const FGearItem& Item, const TArray<FAffixDefinition>& AffixPool);
+// ---------------------------------------------------------------------------
+// Affix Definition (data-table row: one row per affix)
+// ---------------------------------------------------------------------------
 
-    UFUNCTION(BlueprintPure, Category = "Gear Affixes")
-    static FString DescribeAffix(const FRolledAffix& Rolled, const TArray<FAffixDefinition>& AffixPool);
+USTRUCT(BlueprintType)
+struct FAffixDefinition : public FTableRowBase
+{
+    GENERATED_BODY()
 
-    // Builds AffixId -> index-into-AffixPool once. Build this a single time
-    // when an affix pool is loaded (e.g. after reading a UDataTable), then
-    // reuse it across every BuildModifierPoolFromGearIndexed /
-    // DescribeAffixIndexed call instead of re-scanning the pool per lookup.
-    UFUNCTION(BlueprintCallable, Category = "Gear Affixes")
-    static TMap<FName, int32> BuildAffixIndex(const TArray<FAffixDefinition>& AffixPool);
+    // Unique identifier, e.g. "Prefix_AddedPhysicalDamage". Used to look the
+    // definition back up from a rolled FRolledAffix stored on an item.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
+    FName AffixId;
 
-    // O(1)-per-affix version of BuildModifierPoolFromGear, using a
-    // pre-built AffixIndex (see BuildAffixIndex) instead of scanning AffixPool.
-    UFUNCTION(BlueprintCallable, Category = "Gear Affixes")
-    static FGearStatContribution BuildModifierPoolFromGearIndexed(const FGearItem& Item, const TArray<FAffixDefinition>& AffixPool,
-                                                                    const TMap<FName, int32>& AffixIndex);
+    // Printf-style format string for display, e.g. "+%.0f to Maximum Life"
+    // or "%.0f%% increased Attack Speed" (value is pre-multiplied by 100
+    // by the caller for percent-style affixes if desired).
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
+    FString DisplayFormat;
 
-    // O(1) version of DescribeAffix using a pre-built AffixIndex.
-    UFUNCTION(BlueprintPure, Category = "Gear Affixes")
-    static FString DescribeAffixIndexed(const FRolledAffix& Rolled, const TArray<FAffixDefinition>& AffixPool,
-                                         const TMap<FName, int32>& AffixIndex);
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
+    EAffixType AffixType = EAffixType::Prefix;
 
-    // Builds a 9-entry tier array (Tier 9 down to Tier 1) by linearly
-    // interpolating roll range, item level requirement, and spawn weight
-    // between the Tier-9 and Tier-1 endpoints. Lets an affix be authored
-    // with 8 numbers instead of 9 hand-written tier rows.
-    UFUNCTION(BlueprintPure, Category = "Gear Affixes")
-    static TArray<FAffixTier> BuildTierProgression(float Tier9Min, float Tier9Max, float Tier1Min, float Tier1Max,
-                                                     int32 Tier9ItemLevel, int32 Tier1ItemLevel,
-                                                     float Tier9Weight, float Tier1Weight);
+    // Whether this affix modifies a derived stat (StatType/ModApplication
+    // apply) or a base attribute (AttributeType applies instead, and the
+    // roll is always treated as a flat addition — see BuildModifierPoolFromGear).
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
+    EAffixTargetType TargetType = EAffixTargetType::Stat;
 
-    // ORs together the slot bits for every slot passed in — use this to
-    // build an AllowedSlotsMask from a designer-friendly TArray<EGearSlot>
-    // (e.g. in Blueprint, or in C++ authoring code like GetExampleAffixTable).
-    UFUNCTION(BlueprintPure, Category = "Gear Affixes")
-    static int32 MakeSlotMask(const TArray<EGearSlot>& Slots);
+    // Only used when TargetType == Stat.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
+    EStatType StatType = EStatType::Life;
 
-    UFUNCTION(BlueprintPure, Category = "Gear Affixes")
-    static int32 GetAllGearSlotsMask();
+    // Only used when TargetType == Stat. Applied to StatType AND every
+    // entry in AdditionalStatTypes below, using the same ModApplication and
+    // the same rolled value for all of them — this is what lets one affix
+    // (one roll, one tier) act as a multi-stat modifier, e.g. "increased
+    // Elemental Damage" boosting DamageFire + DamageCold + DamageLightning
+    // simultaneously rather than needing three separate affixes. Leave
+    // empty for an ordinary single-stat affix.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
+    TArray<EStatType> AdditionalStatTypes;
 
-    // All gear slots except Weapon — used by the many affixes tagged
-    // "Everything but Weapons" (Life, Armour, resistances, etc.).
-    UFUNCTION(BlueprintPure, Category = "Gear Affixes")
-    static int32 GetNonWeaponGearSlotsMask();
+    // Only used when TargetType == Stat.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
+    EModifierApplication ModApplication = EModifierApplication::Flat;
 
-    // Illustrative seed data: an affix definition for every EStatType that
-    // carries a Prefix/Suffix designation, plus Strength/Dexterity/
-    // Intelligence attribute affixes, following the Added Physical Damage
-    // progression (T9: 1-4, T1: 100-200) as a template for authoring the
-    // full pool as a UDataTable. Intentionally excludes DodgeChance (not an
-    // affix — derived from Evasion), CooldownReduction and AoeRadius
-    // (undetermined design), since those have no Prefix/Suffix designation.
-    //
-    // NOT BlueprintPure: this deep-copies a 29-entry table (each with a
-    // nested 9-tier array) on every call. A pure BP node has no result
-    // caching, so wiring this into anything that re-evaluates per-tick would
-    // rebuild and copy the whole table every frame. Call it once and cache
-    // the result (or load the real pool from a UDataTable instead).
-    UFUNCTION(BlueprintCallable, Category = "Gear Affixes")
-    static TArray<FAffixDefinition> GetExampleAffixTable();
+    // Only used when TargetType == Attribute.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
+    EBaseAttributeType AttributeType = EBaseAttributeType::Strength;
 
-private:
-    static const FAffixDefinition* FindDefinition(const TArray<FAffixDefinition>& AffixPool, FName AffixId);
-    static const FAffixDefinition* FindDefinitionIndexed(const TArray<FAffixDefinition>& AffixPool,
-                                                           const TMap<FName, int32>& AffixIndex, FName AffixId);
+    // If true, RolledValue is a fraction (0.15 = 15%) that should be
+    // multiplied by 100 before being substituted into DisplayFormat's
+    // "%.0f%%"-style placeholder. Leave false for non-percent values
+    // (flat Life, Armour, Spell Damage, etc.).
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
+    bool bIsPercentageValue = false;
 
-    // Single-pass weighted reservoir pick: calls GetWeight(i) for i in
-    // [0, Count), treating a weight <= 0 as ineligible, and returns the
-    // chosen index (or -1 if every weight was <= 0). No intermediate
-    // array is allocated, unlike building a weights array and walking a
-    // cumulative sum separately.
-    template <typename TWeightFunc>
-    static int32 WeightedReservoirPick(int32 Count, TWeightFunc&& GetWeight)
+    // Mutual-exclusion tag. Two affixes sharing a group will never both be
+    // rolled onto the same item (e.g. flat Life and % increased Life both
+    // tagged "Life" so an item can't roll both).
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
+    FName AffixGroup;
+
+    // Free-form categorization tags, e.g. "Physical", "Elemental",
+    // "Resistance", "Regen", "Resource" — unrelated to AffixGroup's
+    // mutual-exclusion role. An affix can carry several (a Fire Resistance
+    // affix might be tagged both "Resistance" and "Elemental"). Meant for
+    // querying/filtering — a crafting currency that only rerolls
+    // "Elemental" affixes, a UI filter, etc. — not for roll-time exclusion.
+    // FName rather than an enum so new tags can be added by editing data
+    // (a UDataTable row, once the pool is authored that way) without a
+    // recompile, same reasoning as AffixGroup.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
+    TArray<FName> Tags;
+
+    bool HasTag(FName Tag) const
     {
-        float TotalWeight = 0.0f;
-        int32 Picked = -1;
-        for (int32 i = 0; i < Count; ++i)
+        return Tags.Contains(Tag);
+    }
+
+    // Bitmask of eligible EGearSlot values, built with GetGearSlotBit() /
+    // UGearAffixFunctionLibrary::MakeSlotMask(). int32 (not uint32 — see
+    // GetGearSlotBit's comment) with the Bitmask meta so the editor renders
+    // it as a checkbox dropdown against EGearSlot instead of a raw integer.
+    // Replaces a TArray<EGearSlot> so eligibility checks and the affix pool
+    // itself avoid a per-affix heap allocation and a linear Contains() scan
+    // — this runs on every item roll.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix", meta = (Bitmask, BitmaskEnum = "EGearSlot"))
+    int32 AllowedSlotsMask = 0;
+
+    // Expected to contain 9 entries with TierNumber 1..9, but the system
+    // does not hard-require exactly 9 — HasUnlockedTier/GetUnlockedTierIndices
+    // just filter by RequiredItemLevel, so partially-defined affixes still work.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
+    TArray<FAffixTier> Tiers;
+
+    // Relative chance this affix is picked over other eligible affixes of
+    // the same AffixType when generating an item.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
+    float SpawnWeight = 100.0f;
+
+    bool IsEligibleForSlot(EGearSlot Slot) const
+    {
+        return (AllowedSlotsMask & GetGearSlotBit(Slot)) != 0;
+    }
+
+    // Non-allocating existence check — use this on the roll hot path instead
+    // of GetUnlockedTierIndices(...).Num() > 0, which builds and discards a
+    // whole TArray just to answer a bool.
+    bool HasUnlockedTier(int32 ItemLevel) const
+    {
+        for (const FAffixTier& Tier : Tiers)
         {
-            const float W = GetWeight(i);
-            if (W <= 0.0f)
+            if (Tier.RequiredItemLevel <= ItemLevel)
             {
-                continue;
-            }
-            TotalWeight += W;
-            if (FMath::FRand() * TotalWeight <= W)
-            {
-                Picked = i;
+                return true;
             }
         }
-        return Picked;
+        return false;
     }
+
+    // Returns indices into Tiers whose RequiredItemLevel <= ItemLevel.
+    // Allocates — kept for tooling/UI/debug use (e.g. listing all tiers an
+    // item level could roll). Not used on the roll hot path; see
+    // UGearAffixFunctionLibrary::RollTierIndexForAffix for the allocation-free
+    // version used there.
+    TArray<int32> GetUnlockedTierIndices(int32 ItemLevel) const
+    {
+        TArray<int32> Result;
+        for (int32 i = 0; i < Tiers.Num(); ++i)
+        {
+            if (Tiers[i].RequiredItemLevel <= ItemLevel)
+            {
+                Result.Add(i);
+            }
+        }
+        return Result;
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Rolled Affix Instance (what actually lives on an item)
+// ---------------------------------------------------------------------------
+
+// Deliberately minimal — everything else (stat, application type, display
+// format) is looked up from the FAffixDefinition via AffixId so items don't
+// duplicate authoring data. Only the roll outcome is stored per-item.
+USTRUCT(BlueprintType)
+struct FRolledAffix
+{
+    GENERATED_BODY()
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
+    FName AffixId;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
+    int32 TierNumber = 9;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
+    float RolledValue = 0.0f;
+};
+
+// ---------------------------------------------------------------------------
+// Gear Item
+// ---------------------------------------------------------------------------
+
+USTRUCT(BlueprintType)
+struct FGearItem
+{
+    GENERATED_BODY()
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item")
+    FName ItemId;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item")
+    FString ItemName;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item")
+    EGearSlot GearSlot = EGearSlot::Weapon;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item")
+    EItemRarity Rarity = EItemRarity::Normal;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item")
+    int32 ItemLevel = 1;
+
+    // Which FGearBaseItem::BaseId this item was generated from, if any
+    // (see UGearBaseFunctionLibrary::GenerateGearItemFromBase). Lets the
+    // base's own innate defense value be looked back up alongside the
+    // rolled affixes — see BuildModifierPoolFromGearWithBase. Empty for
+    // items built directly via GenerateGearItem without a base.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item")
+    FName BaseItemId;
+
+    // Max 3 — enforced by the generator, not the struct itself.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item")
+    TArray<FRolledAffix> PrefixAffixes;
+
+    // Max 3 — enforced by the generator, not the struct itself.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item")
+    TArray<FRolledAffix> SuffixAffixes;
+
+    int32 GetTotalAffixCount() const
+    {
+        return PrefixAffixes.Num() + SuffixAffixes.Num();
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Gear Stat Contribution
+// ---------------------------------------------------------------------------
+
+// Output of converting a gear item's rolled affixes into something usable by
+// the character stats system. StatPool feeds FCharacterStats::Recalculate
+// directly; the Bonus* attribute fields should be added onto FBaseAttributes
+// BEFORE calling Recalculate, since Strength/Dexterity/Intelligence are
+// inputs to those formulas rather than outputs of them.
+USTRUCT(BlueprintType)
+struct FGearStatContribution
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category = "Item")
+    FModifierPool StatPool;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Item")
+    float BonusStrength = 0.0f;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Item")
+    float BonusDexterity = 0.0f;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Item")
+    float BonusIntelligence = 0.0f;
 };

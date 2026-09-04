@@ -77,6 +77,36 @@ void UGearAffixFunctionLibrary::GetAffixCountRangeForRarity(EItemRarity Rarity, 
 // Eligibility / rolling
 // ---------------------------------------------------------------------------
 
+TArray<int32> UGearAffixFunctionLibrary::GetAffixesWithTag(const TArray<FAffixDefinition>& AffixPool, FName Tag)
+{
+    TArray<int32> Result;
+    for (int32 i = 0; i < AffixPool.Num(); ++i)
+    {
+        if (AffixPool[i].HasTag(Tag))
+        {
+            Result.Add(i);
+        }
+    }
+    return Result;
+}
+
+TArray<int32> UGearAffixFunctionLibrary::GetAffixesWithAnyTag(const TArray<FAffixDefinition>& AffixPool, const TArray<FName>& Tags)
+{
+    TArray<int32> Result;
+    for (int32 i = 0; i < AffixPool.Num(); ++i)
+    {
+        for (FName Tag : Tags)
+        {
+            if (AffixPool[i].HasTag(Tag))
+            {
+                Result.Add(i);
+                break;
+            }
+        }
+    }
+    return Result;
+}
+
 TArray<int32> UGearAffixFunctionLibrary::GetEligibleAffixes(const TArray<FAffixDefinition>& AffixPool, EAffixType AffixType,
                                                               EGearSlot Slot, int32 ItemLevel)
 {
@@ -237,17 +267,30 @@ static FGearStatContribution ApplyAffixesToContribution(const FGearItem& Item,
                 continue;
             }
 
-            switch (Def->ModApplication)
+            // Applies the same rolled value/application to one stat — used
+            // for StatType below and again for each AdditionalStatTypes
+            // entry, so a multi-stat affix like "increased Elemental
+            // Damage" boosts Fire/Cold/Lightning from a single roll.
+            auto ApplyToStat = [&Contribution, &Def](EStatType Stat, float Value)
             {
-                case EModifierApplication::Flat:
-                    Contribution.StatPool.AddFlat(Def->StatType, Rolled.RolledValue);
-                    break;
-                case EModifierApplication::Increased:
-                    Contribution.StatPool.AddIncreased(Def->StatType, Rolled.RolledValue);
-                    break;
-                case EModifierApplication::More:
-                    Contribution.StatPool.AddMore(Def->StatType, Rolled.RolledValue);
-                    break;
+                switch (Def->ModApplication)
+                {
+                    case EModifierApplication::Flat:
+                        Contribution.StatPool.AddFlat(Stat, Value);
+                        break;
+                    case EModifierApplication::Increased:
+                        Contribution.StatPool.AddIncreased(Stat, Value);
+                        break;
+                    case EModifierApplication::More:
+                        Contribution.StatPool.AddMore(Stat, Value);
+                        break;
+                }
+            };
+
+            ApplyToStat(Def->StatType, Rolled.RolledValue);
+            for (EStatType AdditionalStat : Def->AdditionalStatTypes)
+            {
+                ApplyToStat(AdditionalStat, Rolled.RolledValue);
             }
         }
     };
@@ -325,13 +368,13 @@ int32 UGearAffixFunctionLibrary::MakeSlotMask(const TArray<EGearSlot>& Slots)
 
 int32 UGearAffixFunctionLibrary::GetAllGearSlotsMask()
 {
-    return MakeSlotMask({ EGearSlot::Weapon, EGearSlot::OffHand, EGearSlot::Helmet, EGearSlot::Chest, EGearSlot::Gloves,
-                           EGearSlot::Boots, EGearSlot::Belt, EGearSlot::Amulet, EGearSlot::Ring });
+    return MakeSlotMask({ EGearSlot::Weapon, EGearSlot::Shield, EGearSlot::Quiver, EGearSlot::Helmet, EGearSlot::Chest,
+                           EGearSlot::Gloves, EGearSlot::Boots, EGearSlot::Belt, EGearSlot::Amulet, EGearSlot::Ring });
 }
 
 int32 UGearAffixFunctionLibrary::GetNonWeaponGearSlotsMask()
 {
-    return MakeSlotMask({ EGearSlot::OffHand, EGearSlot::Helmet, EGearSlot::Chest, EGearSlot::Gloves,
+    return MakeSlotMask({ EGearSlot::Shield, EGearSlot::Quiver, EGearSlot::Helmet, EGearSlot::Chest, EGearSlot::Gloves,
                            EGearSlot::Boots, EGearSlot::Belt, EGearSlot::Amulet, EGearSlot::Ring });
 }
 
@@ -357,11 +400,19 @@ TArray<FAffixDefinition> UGearAffixFunctionLibrary::GetExampleAffixTable()
 
     const int32 AllSlots = GetAllGearSlotsMask();
     const int32 NonWeaponSlots = GetNonWeaponGearSlotsMask();
-    const int32 WeaponGlovesRing = MakeSlotMask({ EGearSlot::Weapon, EGearSlot::Gloves, EGearSlot::Ring });
-    const int32 WeaponRing = MakeSlotMask({ EGearSlot::Weapon, EGearSlot::Ring });
+    // "Normal attack" affix slot sets — Quiver included alongside Weapon,
+    // since a Quiver augments your bow's attacks. Shield deliberately
+    // excluded from all of these; its exclusive role is the block affixes
+    // further down.
+    const int32 WeaponGlovesRingQuiver = MakeSlotMask({ EGearSlot::Weapon, EGearSlot::Gloves, EGearSlot::Ring, EGearSlot::Quiver });
+    const int32 WeaponRingQuiver = MakeSlotMask({ EGearSlot::Weapon, EGearSlot::Ring, EGearSlot::Quiver });
+    const int32 WeaponRingGlovesQuiver = MakeSlotMask({ EGearSlot::Weapon, EGearSlot::Ring, EGearSlot::Gloves, EGearSlot::Quiver });
+    // Cast Speed stays Weapon/Ring/Gloves only, no Quiver — casting isn't a
+    // "normal attack", so this one doesn't get the Quiver treatment the way
+    // Attack Speed does above.
     const int32 WeaponRingGloves = MakeSlotMask({ EGearSlot::Weapon, EGearSlot::Ring, EGearSlot::Gloves });
     const int32 BootsOnly = MakeSlotMask({ EGearSlot::Boots });
-    const int32 OffHandOnly = MakeSlotMask({ EGearSlot::OffHand });
+    const int32 ShieldOnly = MakeSlotMask({ EGearSlot::Shield });
     const int32 WeaponOnly = MakeSlotMask({ EGearSlot::Weapon });
 
     const int32 Tier9Ilvl = 1;
@@ -371,7 +422,8 @@ TArray<FAffixDefinition> UGearAffixFunctionLibrary::GetExampleAffixTable()
 
     auto AddStatAffix = [&](FName Id, const FString& Format, EAffixType Type, EStatType Stat, EModifierApplication App,
                              FName Group, int32 SlotsMask, float SpawnWeight,
-                             float T9Min, float T9Max, float T1Min, float T1Max, bool bIsPercent = false)
+                             float T9Min, float T9Max, float T1Min, float T1Max, bool bIsPercent = false,
+                             const TArray<FName>& Tags = {}, const TArray<EStatType>& AdditionalStats = {})
     {
         FAffixDefinition Def;
         Def.AffixId = Id;
@@ -379,8 +431,10 @@ TArray<FAffixDefinition> UGearAffixFunctionLibrary::GetExampleAffixTable()
         Def.AffixType = Type;
         Def.TargetType = EAffixTargetType::Stat;
         Def.StatType = Stat;
+        Def.AdditionalStatTypes = AdditionalStats;
         Def.ModApplication = App;
         Def.AffixGroup = Group;
+        Def.Tags = Tags;
         Def.AllowedSlotsMask = SlotsMask;
         Def.SpawnWeight = SpawnWeight;
         Def.bIsPercentageValue = bIsPercent;
@@ -389,7 +443,8 @@ TArray<FAffixDefinition> UGearAffixFunctionLibrary::GetExampleAffixTable()
     };
 
     auto AddAttributeAffix = [&](FName Id, const FString& Format, EBaseAttributeType Attr, FName Group,
-                                  float SpawnWeight, float T9Min, float T9Max, float T1Min, float T1Max)
+                                  float SpawnWeight, float T9Min, float T9Max, float T1Min, float T1Max,
+                                  const TArray<FName>& Tags = {})
     {
         FAffixDefinition Def;
         Def.AffixId = Id;
@@ -399,6 +454,7 @@ TArray<FAffixDefinition> UGearAffixFunctionLibrary::GetExampleAffixTable()
         Def.AttributeType = Attr;
         Def.ModApplication = EModifierApplication::Flat;
         Def.AffixGroup = Group;
+        Def.Tags = Tags;
         Def.AllowedSlotsMask = AllSlots;
         Def.SpawnWeight = SpawnWeight;
         Def.bIsPercentageValue = false;
@@ -408,93 +464,102 @@ TArray<FAffixDefinition> UGearAffixFunctionLibrary::GetExampleAffixTable()
 
     // --- Attributes (Suffix -- All) -----------------------------------------
     AddAttributeAffix(FName("Suffix_Strength"), TEXT("of the Bear (+%.0f to Strength)"),
-                       EBaseAttributeType::Strength, FName("AttrStrength"), 100.0f, 3.0f, 6.0f, 40.0f, 65.0f);
+                       EBaseAttributeType::Strength, FName("AttrStrength"), 100.0f, 3.0f, 6.0f, 40.0f, 65.0f, { FName("Attribute") });
     AddAttributeAffix(FName("Suffix_Dexterity"), TEXT("of the Fox (+%.0f to Dexterity)"),
-                       EBaseAttributeType::Dexterity, FName("AttrDexterity"), 100.0f, 3.0f, 6.0f, 40.0f, 65.0f);
+                       EBaseAttributeType::Dexterity, FName("AttrDexterity"), 100.0f, 3.0f, 6.0f, 40.0f, 65.0f, { FName("Attribute") });
     AddAttributeAffix(FName("Suffix_Intelligence"), TEXT("of the Owl (+%.0f to Intelligence)"),
-                       EBaseAttributeType::Intelligence, FName("AttrIntelligence"), 100.0f, 3.0f, 6.0f, 40.0f, 65.0f);
+                       EBaseAttributeType::Intelligence, FName("AttrIntelligence"), 100.0f, 3.0f, 6.0f, 40.0f, 65.0f, { FName("Attribute") });
 
     // --- Prefixes ------------------------------------------------------------
     AddStatAffix(FName("Prefix_Life"), TEXT("+%.0f to Maximum Life"), EAffixType::Prefix,
                  EStatType::Life, EModifierApplication::Flat, FName("Life"), NonWeaponSlots, 100.0f,
-                 5.0f, 12.0f, 161.0f, 200.0f);
+                 5.0f, 12.0f, 161.0f, 200.0f, false, { FName("Resource"), FName("Life"), FName("Defense") });
     AddStatAffix(FName("Prefix_Mana"), TEXT("+%.0f to Maximum Mana"), EAffixType::Prefix,
                  EStatType::Mana, EModifierApplication::Flat, FName("Mana"), AllSlots, 90.0f,
-                 4.0f, 8.0f, 90.0f, 120.0f);
+                 4.0f, 8.0f, 90.0f, 120.0f, false, { FName("Resource"), FName("Mana") });
     AddStatAffix(FName("Prefix_Barrier"), TEXT("+%.0f to Barrier"), EAffixType::Prefix,
                  EStatType::Barrier, EModifierApplication::Flat, FName("Barrier"), NonWeaponSlots, 70.0f,
-                 4.0f, 10.0f, 120.0f, 160.0f);
+                 4.0f, 10.0f, 120.0f, 160.0f, false, { FName("Resource"), FName("Defense") });
     AddStatAffix(FName("Prefix_AddedPhysicalDamage"), TEXT("+%.0f to Physical Damage"), EAffixType::Prefix,
-                 EStatType::DamagePhysical, EModifierApplication::Flat, FName("PhysDmg"), WeaponGlovesRing, 100.0f,
-                 1.0f, 4.0f, 100.0f, 200.0f);
+                 EStatType::DamagePhysical, EModifierApplication::Flat, FName("PhysDmg"), WeaponGlovesRingQuiver, 100.0f,
+                 1.0f, 4.0f, 100.0f, 200.0f, false, { FName("Physical"), FName("Offense") });
     AddStatAffix(FName("Prefix_AddedFireDamage"), TEXT("+%.0f to Fire Damage"), EAffixType::Prefix,
-                 EStatType::DamageFire, EModifierApplication::Flat, FName("FireDmg"), WeaponGlovesRing, 80.0f,
-                 2.0f, 5.0f, 80.0f, 140.0f);
+                 EStatType::DamageFire, EModifierApplication::Flat, FName("FireDmg"), WeaponGlovesRingQuiver, 80.0f,
+                 2.0f, 5.0f, 80.0f, 140.0f, false, { FName("Elemental"), FName("Offense") });
     AddStatAffix(FName("Prefix_AddedColdDamage"), TEXT("+%.0f to Cold Damage"), EAffixType::Prefix,
-                 EStatType::DamageCold, EModifierApplication::Flat, FName("ColdDmg"), WeaponGlovesRing, 80.0f,
-                 2.0f, 5.0f, 80.0f, 140.0f);
+                 EStatType::DamageCold, EModifierApplication::Flat, FName("ColdDmg"), WeaponGlovesRingQuiver, 80.0f,
+                 2.0f, 5.0f, 80.0f, 140.0f, false, { FName("Elemental"), FName("Offense") });
     AddStatAffix(FName("Prefix_AddedLightningDamage"), TEXT("+%.0f to Lightning Damage"), EAffixType::Prefix,
-                 EStatType::DamageLightning, EModifierApplication::Flat, FName("LightningDmg"), WeaponGlovesRing, 80.0f,
-                 3.0f, 8.0f, 100.0f, 180.0f);
+                 EStatType::DamageLightning, EModifierApplication::Flat, FName("LightningDmg"), WeaponGlovesRingQuiver, 80.0f,
+                 3.0f, 8.0f, 100.0f, 180.0f, false, { FName("Elemental"), FName("Offense") });
     AddStatAffix(FName("Prefix_AddedPoisonDamage"), TEXT("+%.0f to Poison Damage"), EAffixType::Prefix,
-                 EStatType::DamagePoison, EModifierApplication::Flat, FName("PoisonDmg"), WeaponGlovesRing, 70.0f,
-                 1.0f, 3.0f, 40.0f, 70.0f);
+                 EStatType::DamagePoison, EModifierApplication::Flat, FName("PoisonDmg"), WeaponGlovesRingQuiver, 70.0f,
+                 1.0f, 3.0f, 40.0f, 70.0f, false, { FName("Chaos"), FName("Offense") });
+    // Multi-stat affix: one roll applies "%increased" to Fire, Cold, AND
+    // Lightning damage simultaneously via AdditionalStatTypes, rather than
+    // needing three separate elemental-damage-percent affixes competing for
+    // separate prefix slots. Deliberately its own AffixGroup, distinct from
+    // the flat per-element Added-X-Damage prefixes above — the two are
+    // complementary (flat damage + a % multiplier on top), not exclusive.
+    AddStatAffix(FName("Prefix_IncreasedElementalDamage"), TEXT("+%.0f%% increased Elemental Damage"), EAffixType::Prefix,
+                 EStatType::DamageFire, EModifierApplication::Increased, FName("ElementalDamagePercent"), WeaponGlovesRingQuiver, 70.0f,
+                 0.10f, 0.15f, 0.89f, 1.00f, /*bIsPercent=*/true, { FName("Elemental"), FName("Offense") }, { EStatType::DamageCold, EStatType::DamageLightning });
     AddStatAffix(FName("Prefix_MovementSpeed"), TEXT("+%.0f%% increased Movement Speed"), EAffixType::Prefix,
                  EStatType::MovementSpeed, EModifierApplication::Increased, FName("MoveSpeed"), BootsOnly, 100.0f,
-                 0.02f, 0.04f, 0.20f, 0.30f, /*bIsPercent=*/true);
+                 0.02f, 0.04f, 0.20f, 0.30f, /*bIsPercent=*/true, { FName("Speed") });
     AddStatAffix(FName("Prefix_Armour"), TEXT("+%.0f to Armour"), EAffixType::Prefix,
                  EStatType::Armour, EModifierApplication::Flat, FName("Armour"), NonWeaponSlots, 100.0f,
-                 3.0f, 8.0f, 150.0f, 220.0f);
-    AddStatAffix(FName("Prefix_FireResistance"), TEXT("+%.0f%% to Fire Resistance"), EAffixType::Prefix,
-                 EStatType::FireResistance, EModifierApplication::Flat, FName("FireRes"), NonWeaponSlots, 90.0f,
-                 5.0f, 8.0f, 49.0f, 55.0f); // values are already percentage points (5-55 = "5%-55%") — no bIsPercent scaling needed
-    AddStatAffix(FName("Prefix_ColdResistance"), TEXT("+%.0f%% to Cold Resistance"), EAffixType::Prefix,
-                 EStatType::ColdResistance, EModifierApplication::Flat, FName("ColdRes"), NonWeaponSlots, 90.0f,
-                 5.0f, 8.0f, 49.0f, 55.0f);
-    AddStatAffix(FName("Prefix_LightningResistance"), TEXT("+%.0f%% to Lightning Resistance"), EAffixType::Prefix,
-                 EStatType::LightningResistance, EModifierApplication::Flat, FName("LightningRes"), NonWeaponSlots, 90.0f,
-                 5.0f, 8.0f, 49.0f, 55.0f);
-    AddStatAffix(FName("Prefix_PoisonResistance"), TEXT("+%.0f%% to Poison Resistance"), EAffixType::Prefix,
-                 EStatType::PoisonResistance, EModifierApplication::Flat, FName("PoisonRes"), NonWeaponSlots, 90.0f,
-                 5.0f, 8.0f, 49.0f, 55.0f);
+                 3.0f, 8.0f, 150.0f, 220.0f, false, { FName("Defense") });
     AddStatAffix(FName("Prefix_Evasion"), TEXT("+%.0f to Evasion"), EAffixType::Prefix,
                  EStatType::Evasion, EModifierApplication::Flat, FName("Evasion"), NonWeaponSlots, 100.0f,
-                 3.0f, 8.0f, 150.0f, 220.0f);
+                 3.0f, 8.0f, 150.0f, 220.0f, false, { FName("Defense") });
     AddStatAffix(FName("Prefix_BlockChance"), TEXT("+%.0f%% increased Block Chance"), EAffixType::Prefix,
-                 EStatType::BlockChance, EModifierApplication::Flat, FName("BlockChance"), OffHandOnly, 60.0f,
-                 0.02f, 0.04f, 0.15f, 0.20f, /*bIsPercent=*/true);
+                 EStatType::BlockChance, EModifierApplication::Flat, FName("BlockChance"), ShieldOnly, 60.0f,
+                 0.02f, 0.04f, 0.15f, 0.20f, /*bIsPercent=*/true, { FName("Defense") });
     AddStatAffix(FName("Prefix_SpellBlockChance"), TEXT("+%.0f%% increased Spell Block Chance"), EAffixType::Prefix,
-                 EStatType::SpellBlock, EModifierApplication::Flat, FName("SpellBlock"), OffHandOnly, 60.0f,
-                 0.02f, 0.04f, 0.15f, 0.20f, /*bIsPercent=*/true);
+                 EStatType::SpellBlock, EModifierApplication::Flat, FName("SpellBlock"), ShieldOnly, 60.0f,
+                 0.02f, 0.04f, 0.15f, 0.20f, /*bIsPercent=*/true, { FName("Defense"), FName("Caster") });
     AddStatAffix(FName("Prefix_SpellDamage"), TEXT("+%.0f to Spell Damage"), EAffixType::Prefix,
                  EStatType::SpellDamage, EModifierApplication::Flat, FName("SpellDamage"), WeaponOnly, 80.0f,
-                 5.0f, 10.0f, 100.0f, 180.0f);
+                 5.0f, 10.0f, 100.0f, 180.0f, false, { FName("Offense"), FName("Caster") });
 
     // --- Suffixes --------------------------------------------------------------
+    AddStatAffix(FName("Suffix_FireResistance"), TEXT("+%.0f%% to Fire Resistance"), EAffixType::Suffix,
+                 EStatType::FireResistance, EModifierApplication::Flat, FName("FireRes"), NonWeaponSlots, 90.0f,
+                 5.0f, 8.0f, 49.0f, 55.0f, false, { FName("Resistance"), FName("Elemental"), FName("Defense") }); // values are already percentage points (5-55 = "5%-55%") — no bIsPercent scaling needed
+    AddStatAffix(FName("Suffix_ColdResistance"), TEXT("+%.0f%% to Cold Resistance"), EAffixType::Suffix,
+                 EStatType::ColdResistance, EModifierApplication::Flat, FName("ColdRes"), NonWeaponSlots, 90.0f,
+                 5.0f, 8.0f, 49.0f, 55.0f, false, { FName("Resistance"), FName("Elemental"), FName("Defense") });
+    AddStatAffix(FName("Suffix_LightningResistance"), TEXT("+%.0f%% to Lightning Resistance"), EAffixType::Suffix,
+                 EStatType::LightningResistance, EModifierApplication::Flat, FName("LightningRes"), NonWeaponSlots, 90.0f,
+                 5.0f, 8.0f, 49.0f, 55.0f, false, { FName("Resistance"), FName("Elemental"), FName("Defense") });
+    AddStatAffix(FName("Suffix_PoisonResistance"), TEXT("+%.0f%% to Poison Resistance"), EAffixType::Suffix,
+                 EStatType::PoisonResistance, EModifierApplication::Flat, FName("PoisonRes"), NonWeaponSlots, 90.0f,
+                 5.0f, 8.0f, 49.0f, 55.0f, false, { FName("Resistance"), FName("Chaos"), FName("Defense") });
     AddStatAffix(FName("Suffix_CriticalStrikeChance"), TEXT("Sharpened (+%.0f%% increased Critical Strike Chance)"), EAffixType::Suffix,
-                 EStatType::CriticalStrikeChance, EModifierApplication::Increased, FName("CritChance"), WeaponRing, 60.0f,
-                 0.10f, 0.15f, 0.89f, 1.00f, /*bIsPercent=*/true);
+                 EStatType::CriticalStrikeChance, EModifierApplication::Increased, FName("CritChance"), WeaponRingQuiver, 60.0f,
+                 0.10f, 0.15f, 0.89f, 1.00f, /*bIsPercent=*/true, { FName("Critical"), FName("Offense") });
     AddStatAffix(FName("Suffix_CriticalStrikeMultiplier"), TEXT("Deadly (+%.0f%% to Critical Strike Multiplier)"), EAffixType::Suffix,
-                 EStatType::CriticalStrikeMultiplier, EModifierApplication::Flat, FName("CritMulti"), WeaponRing, 60.0f,
-                 0.05f, 0.10f, 0.50f, 0.80f, /*bIsPercent=*/true);
+                 EStatType::CriticalStrikeMultiplier, EModifierApplication::Flat, FName("CritMulti"), WeaponRingQuiver, 60.0f,
+                 0.05f, 0.10f, 0.50f, 0.80f, /*bIsPercent=*/true, { FName("Critical"), FName("Offense") });
     AddStatAffix(FName("Suffix_AttackSpeed"), TEXT("of Haste (+%.0f%% increased Attack Speed)"), EAffixType::Suffix,
-                 EStatType::AttackSpeed, EModifierApplication::Increased, FName("AttackSpeed"), WeaponRingGloves, 70.0f,
-                 0.03f, 0.05f, 0.28f, 0.32f, /*bIsPercent=*/true);
+                 EStatType::AttackSpeed, EModifierApplication::Increased, FName("AttackSpeed"), WeaponRingGlovesQuiver, 70.0f,
+                 0.03f, 0.05f, 0.28f, 0.32f, /*bIsPercent=*/true, { FName("Speed"), FName("Offense") });
     AddStatAffix(FName("Suffix_CastSpeed"), TEXT("of Alacrity (+%.0f%% increased Cast Speed)"), EAffixType::Suffix,
                  EStatType::CastSpeed, EModifierApplication::Increased, FName("CastSpeed"), WeaponRingGloves, 70.0f,
-                 0.03f, 0.05f, 0.28f, 0.32f, /*bIsPercent=*/true);
+                 0.03f, 0.05f, 0.28f, 0.32f, /*bIsPercent=*/true, { FName("Speed"), FName("Offense"), FName("Caster") });
     AddStatAffix(FName("Suffix_LifeLeech"), TEXT("of the Leech (+%.1f%% of Physical Damage Leeched as Life)"), EAffixType::Suffix,
-                 EStatType::LifeLeech, EModifierApplication::Flat, FName("LifeLeech"), WeaponGlovesRing, 50.0f,
-                 0.002f, 0.004f, 0.02f, 0.03f, /*bIsPercent=*/true);
+                 EStatType::LifeLeech, EModifierApplication::Flat, FName("LifeLeech"), WeaponGlovesRingQuiver, 50.0f,
+                 0.002f, 0.004f, 0.02f, 0.03f, /*bIsPercent=*/true, { FName("Leech"), FName("Life") });
     AddStatAffix(FName("Suffix_ManaLeech"), TEXT("of the Siphon (+%.1f%% of Physical Damage Leeched as Mana)"), EAffixType::Suffix,
-                 EStatType::ManaLeech, EModifierApplication::Flat, FName("ManaLeech"), WeaponGlovesRing, 50.0f,
-                 0.002f, 0.004f, 0.02f, 0.03f, /*bIsPercent=*/true);
+                 EStatType::ManaLeech, EModifierApplication::Flat, FName("ManaLeech"), WeaponGlovesRingQuiver, 50.0f,
+                 0.002f, 0.004f, 0.02f, 0.03f, /*bIsPercent=*/true, { FName("Leech"), FName("Mana") });
     AddStatAffix(FName("Suffix_HealthRegen"), TEXT("of Recovery (+%.0f Life Regenerated per second)"), EAffixType::Suffix,
                  EStatType::HealthRegen, EModifierApplication::Flat, FName("HealthRegen"), NonWeaponSlots, 80.0f,
-                 1.0f, 3.0f, 20.0f, 35.0f);
+                 1.0f, 3.0f, 20.0f, 35.0f, false, { FName("Regen"), FName("Life") });
     AddStatAffix(FName("Suffix_ManaRegen"), TEXT("of Clarity (+%.0f Mana Regenerated per second)"), EAffixType::Suffix,
                  EStatType::ManaRegen, EModifierApplication::Flat, FName("ManaRegen"), NonWeaponSlots, 80.0f,
-                 1.0f, 2.0f, 12.0f, 20.0f);
+                 1.0f, 2.0f, 12.0f, 20.0f, false, { FName("Regen"), FName("Mana") });
 
     return Table;
 }
