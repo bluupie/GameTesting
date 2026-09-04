@@ -2,10 +2,6 @@
 #include <"CoreMinimal.h">
 #include <"CharacterStats.generated.h">   
 
-#include <iostream>
-#include <string>
-#include <unordered_map>
-
 USTRUCT(BlueprintType)
 struct FCharacterProgression
 {
