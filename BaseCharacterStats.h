@@ -101,7 +101,7 @@ struct CharacterStats {
  
         armor    = value(StatType::Armor, attrs.strength * 2.0f);
         evasion  = value(StatType::Evasion, attrs.dexterity * 2.0f);
-        barrier  = value(StatType::Barrier, 0.0f);
+        barrier  = value(StatType::Barrier, attrs.intelligence * 2.0f);
  
         blockChance      = value(StatType::BlockChance, 0.0f);
         spellBlockChance = value(StatType::SpellBlock, 0.0f);
