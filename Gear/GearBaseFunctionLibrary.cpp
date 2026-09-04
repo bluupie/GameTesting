@@ -374,6 +374,7 @@ FGearItem UGearBaseFunctionLibrary::GenerateGearItemFromBase(const FGearBaseItem
     FGearItem Item = UGearAffixFunctionLibrary::GenerateGearItem(Base.BaseId, Base.BaseName, Base.Slot, Base.BaseItemLevel,
                                                                    Rarity, EffectivePool, RareFullAffixChance);
     Item.BaseItemId = Base.BaseId;
+    Item.RequiredCharacterLevel = Base.RequiredCharacterLevel;
     return Item;
 }
 

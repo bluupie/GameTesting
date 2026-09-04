@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DataTable.h"
-#include "Gear/GearAffixTypes.h"   // EGearSlot, EStatType (via BaseCharacterStats.h)
+#include "Gear/GearAffixTypes.h"   // EGearSlot, EStatType (via CharacterStatsTypes.h)
 #include "GearBaseTypes.generated.h"
 
 // ---------------------------------------------------------------------------
