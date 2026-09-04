@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 #include "Engine/DataTable.h"
 #include "Gear/GearAffixTypes.h"   // EGearSlot, EStatType (via BaseCharacterStats.h)
-#include "Gear/GearBaseTypes.generated.h"
+#include "GearBaseTypes.generated.h"
 
 // ---------------------------------------------------------------------------
 // Defense Type / Off-Hand Type
@@ -41,6 +41,36 @@ enum class EOffHandType : uint8
 {
     Shield,
     Quiver
+};
+
+// ---------------------------------------------------------------------------
+// Defense Type Affix Restrictions
+// ---------------------------------------------------------------------------
+
+// One row = one affix group that is NOT allowed to roll on gear of a given
+// defense type (e.g. Armour gear cannot roll the "Mana" group). Deliberately
+// a flat array of simple rows rather than a TMap<EDefenseType, TArray<FName>>:
+// Blueprint doesn't support nested containers (a map of arrays can't be a
+// UPROPERTY/UFUNCTION type), and a flat row list is the easiest shape to
+// extend or trim — add a row to add a restriction, delete a row to remove
+// one. Matched against FAffixDefinition::AffixGroup, not AffixId, so a
+// restriction covers every tier/variant of a stat family in one row.
+// Inherits FTableRowBase so the real restriction list can be authored as a
+// UDataTable later, same pattern as FAffixDefinition and FGearBaseItem —
+// at that point adding/removing a restriction is a spreadsheet edit, no
+// recompile needed.
+USTRUCT(BlueprintType)
+struct FDefenseTypeAffixRestriction : public FTableRowBase
+{
+    GENERATED_BODY()
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gear Base")
+    EDefenseType DefenseType = EDefenseType::Armour;
+
+    // Must match an FAffixDefinition::AffixGroup value exactly, e.g. "Mana",
+    // "AttrIntelligence", "CastSpeed".
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gear Base")
+    FName RestrictedAffixGroup;
 };
 
 // ---------------------------------------------------------------------------
@@ -97,7 +127,10 @@ struct FGearBaseItem : public FTableRowBase
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gear Base")
     bool bHasDefenseType = true;
 
-    // Only meaningful when Slot == OffHand.
+    // Only meaningful when Slot == Shield or Slot == Quiver. Now redundant
+    // with Slot itself (Shield vs Quiver already says which this is) since
+    // EGearSlot split OffHand into two dedicated values — kept as an
+    // explicit, readable field rather than removed.
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gear Base")
     EOffHandType OffHandType = EOffHandType::Shield;
 

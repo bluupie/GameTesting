@@ -447,16 +447,16 @@ TArray<FAffixDefinition> UGearAffixFunctionLibrary::GetExampleAffixTable()
                  3.0f, 8.0f, 150.0f, 220.0f);
     AddStatAffix(FName("Prefix_FireResistance"), TEXT("+%.0f%% to Fire Resistance"), EAffixType::Prefix,
                  EStatType::FireResistance, EModifierApplication::Flat, FName("FireRes"), NonWeaponSlots, 90.0f,
-                 5.0f, 8.0f, 49.0f, 55.0f, /*bIsPercent=*/true);
+                 5.0f, 8.0f, 49.0f, 55.0f); // values are already percentage points (5-55 = "5%-55%") — no bIsPercent scaling needed
     AddStatAffix(FName("Prefix_ColdResistance"), TEXT("+%.0f%% to Cold Resistance"), EAffixType::Prefix,
                  EStatType::ColdResistance, EModifierApplication::Flat, FName("ColdRes"), NonWeaponSlots, 90.0f,
-                 5.0f, 8.0f, 49.0f, 55.0f, /*bIsPercent=*/true);
+                 5.0f, 8.0f, 49.0f, 55.0f);
     AddStatAffix(FName("Prefix_LightningResistance"), TEXT("+%.0f%% to Lightning Resistance"), EAffixType::Prefix,
                  EStatType::LightningResistance, EModifierApplication::Flat, FName("LightningRes"), NonWeaponSlots, 90.0f,
-                 5.0f, 8.0f, 49.0f, 55.0f, /*bIsPercent=*/true);
+                 5.0f, 8.0f, 49.0f, 55.0f);
     AddStatAffix(FName("Prefix_PoisonResistance"), TEXT("+%.0f%% to Poison Resistance"), EAffixType::Prefix,
                  EStatType::PoisonResistance, EModifierApplication::Flat, FName("PoisonRes"), NonWeaponSlots, 90.0f,
-                 5.0f, 8.0f, 49.0f, 55.0f, /*bIsPercent=*/true);
+                 5.0f, 8.0f, 49.0f, 55.0f);
     AddStatAffix(FName("Prefix_Evasion"), TEXT("+%.0f to Evasion"), EAffixType::Prefix,
                  EStatType::Evasion, EModifierApplication::Flat, FName("Evasion"), NonWeaponSlots, 100.0f,
                  3.0f, 8.0f, 150.0f, 220.0f);

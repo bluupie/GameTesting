@@ -39,7 +39,8 @@ UENUM(BlueprintType, meta = (Bitmask))
 enum class EGearSlot : uint8
 {
     Weapon,
-    OffHand,
+    Shield,
+    Quiver,
     Helmet,
     Chest,
     Gloves,
@@ -51,7 +52,7 @@ enum class EGearSlot : uint8
 
 // Bit for this slot within an AllowedSlotsMask. Stored/exposed as int32
 // (not uint32 — Blueprint has no native unsigned-32 type, so UHT won't
-// expose a uint32 UPROPERTY/UFUNCTION to BP). EGearSlot has 9 members, so
+// expose a uint32 UPROPERTY/UFUNCTION to BP). EGearSlot has 10 members, so
 // this comfortably fits within int32's 31 usable bits with room to grow.
 FORCEINLINE int32 GetGearSlotBit(EGearSlot Slot)
 {
@@ -143,6 +144,16 @@ struct FAffixDefinition : public FTableRowBase
     // Only used when TargetType == Stat.
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
     EStatType StatType = EStatType::Life;
+
+    // Only used when TargetType == Stat. Applied to StatType AND every
+    // entry in AdditionalStatTypes below, using the same ModApplication and
+    // the same rolled value for all of them — this is what lets one affix
+    // (one roll, one tier) act as a multi-stat modifier, e.g. "increased
+    // Elemental Damage" boosting DamageFire + DamageCold + DamageLightning
+    // simultaneously rather than needing three separate affixes. Leave
+    // empty for an ordinary single-stat affix.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")
+    TArray<EStatType> AdditionalStatTypes;
 
     // Only used when TargetType == Stat.
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Affix")

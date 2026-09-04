@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
-#include "GearAffixTypes.h"
+#include "Gear/GearAffixTypes.h"
 #include "GearAffixFunctionLibrary.generated.h"
 
 UCLASS()

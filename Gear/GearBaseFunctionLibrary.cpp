@@ -224,7 +224,7 @@ TArray<FGearBaseItem> UGearBaseFunctionLibrary::GetExampleShieldBaseTable()
             FGearBaseItem Base;
             Base.BaseId = FName(*FString::Printf(TEXT("Shield_%s_Rank%d"), *GearBaseNaming::GetDefenseIdLabel(DefenseType), Rank));
             Base.BaseName = BuildShieldBaseName(DefenseType, Rank);
-            Base.Slot = EGearSlot::OffHand;
+            Base.Slot = EGearSlot::Shield;
             Base.DefenseType = DefenseType;
             Base.bHasDefenseType = true;
             Base.OffHandType = EOffHandType::Shield;
@@ -255,7 +255,7 @@ TArray<FGearBaseItem> UGearBaseFunctionLibrary::GetExampleQuiverBaseTable()
         FGearBaseItem Base;
         Base.BaseId = FName(*FString::Printf(TEXT("Quiver_Rank%d"), Rank));
         Base.BaseName = QuiverNames.IsValidIndex(Rank - 1) ? QuiverNames[Rank - 1] : TEXT("Quiver");
-        Base.Slot = EGearSlot::OffHand;
+        Base.Slot = EGearSlot::Quiver;
         Base.bHasDefenseType = false; // quivers carry no defense family
         Base.OffHandType = EOffHandType::Quiver;
         Base.RequiredCharacterLevel = Levels.RequiredCharacterLevel;
@@ -278,14 +278,101 @@ TArray<FGearBaseItem> UGearBaseFunctionLibrary::GetAllExampleGearBases()
 }
 
 // ---------------------------------------------------------------------------
+// Defense type affix restrictions
+// ---------------------------------------------------------------------------
+//
+// Single source of truth for which affix groups can't roll on which defense
+// type. Add a row to add a restriction; delete a row to remove one — no
+// other function in this file needs to change either way.
+
+TArray<FDefenseTypeAffixRestriction> UGearBaseFunctionLibrary::GetExampleDefenseTypeRestrictions()
+{
+    TArray<FDefenseTypeAffixRestriction> Restrictions;
+
+    auto AddRestriction = [&Restrictions](EDefenseType DefenseType, FName Group)
+    {
+        FDefenseTypeAffixRestriction Row;
+        Row.DefenseType = DefenseType;
+        Row.RestrictedAffixGroup = Group;
+        Restrictions.Add(Row);
+    };
+
+    // Armour: heavy melee archetype — no caster/mana stats, no competing defense types.
+    AddRestriction(EDefenseType::Armour, FName("Mana"));
+    AddRestriction(EDefenseType::Armour, FName("AttrIntelligence"));
+    AddRestriction(EDefenseType::Armour, FName("AttrDexterity"));
+    AddRestriction(EDefenseType::Armour, FName("ManaRegen"));
+    AddRestriction(EDefenseType::Armour, FName("Barrier"));
+    AddRestriction(EDefenseType::Armour, FName("Evasion"));
+    AddRestriction(EDefenseType::Armour, FName("CastSpeed"));
+
+    // Evasion: agile/dex archetype — no caster/mana stats, no competing defense types.
+    AddRestriction(EDefenseType::Evasion, FName("AttrIntelligence"));
+    AddRestriction(EDefenseType::Evasion, FName("AttrStrength"));
+    AddRestriction(EDefenseType::Evasion, FName("ManaRegen"));
+    AddRestriction(EDefenseType::Evasion, FName("Mana"));
+    AddRestriction(EDefenseType::Evasion, FName("Barrier"));
+    AddRestriction(EDefenseType::Evasion, FName("Armour"));
+    AddRestriction(EDefenseType::Evasion, FName("CastSpeed"));
+
+    // Barrier: caster/int archetype — no melee attributes, no competing defense types.
+    AddRestriction(EDefenseType::Barrier, FName("AttrDexterity"));
+    AddRestriction(EDefenseType::Barrier, FName("AttrStrength"));
+    AddRestriction(EDefenseType::Barrier, FName("Evasion"));
+    AddRestriction(EDefenseType::Barrier, FName("Armour"));
+    AddRestriction(EDefenseType::Barrier, FName("AttackSpeed"));
+
+    return Restrictions;
+}
+
+bool UGearBaseFunctionLibrary::IsAffixGroupRestrictedForDefenseType(const TArray<FDefenseTypeAffixRestriction>& Restrictions,
+                                                                     FName AffixGroup, EDefenseType DefenseType)
+{
+    for (const FDefenseTypeAffixRestriction& Row : Restrictions)
+    {
+        if (Row.DefenseType == DefenseType && Row.RestrictedAffixGroup == AffixGroup)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+TArray<FAffixDefinition> UGearBaseFunctionLibrary::FilterAffixPoolForDefenseType(const TArray<FAffixDefinition>& AffixPool,
+                                                                                  const TArray<FDefenseTypeAffixRestriction>& Restrictions,
+                                                                                  EDefenseType DefenseType)
+{
+    if (Restrictions.Num() == 0)
+    {
+        return AffixPool; // nothing restricted — copy the pool through unchanged
+    }
+
+    TArray<FAffixDefinition> Filtered;
+    Filtered.Reserve(AffixPool.Num());
+    for (const FAffixDefinition& Def : AffixPool)
+    {
+        if (!IsAffixGroupRestrictedForDefenseType(Restrictions, Def.AffixGroup, DefenseType))
+        {
+            Filtered.Add(Def);
+        }
+    }
+    return Filtered;
+}
+
+// ---------------------------------------------------------------------------
 // Base + affix integration
 // ---------------------------------------------------------------------------
 
 FGearItem UGearBaseFunctionLibrary::GenerateGearItemFromBase(const FGearBaseItem& Base, const TArray<FAffixDefinition>& AffixPool,
+                                                               const TArray<FDefenseTypeAffixRestriction>& Restrictions,
                                                                EItemRarity Rarity, float RareFullAffixChance)
 {
+    const TArray<FAffixDefinition>& EffectivePool = Base.bHasDefenseType
+        ? FilterAffixPoolForDefenseType(AffixPool, Restrictions, Base.DefenseType)
+        : AffixPool; // Quivers carry no defense family — nothing to restrict against.
+
     FGearItem Item = UGearAffixFunctionLibrary::GenerateGearItem(Base.BaseId, Base.BaseName, Base.Slot, Base.BaseItemLevel,
-                                                                   Rarity, AffixPool, RareFullAffixChance);
+                                                                   Rarity, EffectivePool, RareFullAffixChance);
     Item.BaseItemId = Base.BaseId;
     return Item;
 }
