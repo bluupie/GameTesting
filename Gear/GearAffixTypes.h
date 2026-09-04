@@ -299,6 +299,16 @@ struct FGearItem
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item")
     int32 ItemLevel = 1;
 
+    // Copied from the selected base. Equipment code should compare this with
+    // the owning character's level before committing an equip operation.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item")
+    int32 RequiredCharacterLevel = 1;
+
+    // Seed actually used to generate this item's affixes. Persist it for
+    // deterministic tests, server-authoritative replication and replays.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item")
+    int32 GenerationSeed = 0;
+
     // Which FGearBaseItem::BaseId this item was generated from, if any
     // (see UGearBaseFunctionLibrary::GenerateGearItemFromBase). Lets the
     // base's own innate defense value be looked back up alongside the

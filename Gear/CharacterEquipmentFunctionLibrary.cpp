@@ -71,6 +71,11 @@ FEquipOutcome UCharacterEquipmentFunctionLibrary::UnequipSlot(FCharacterEquipmen
     Outcome.bHadPreviousItem = true;
     Outcome.PreviousItem = *Existing;
     Equipment.EquippedItems.Remove(Slot);
+    if (Slot == EEquipmentSlot::OffHand)
+    {
+        Equipment.CurrentOffHandKind = EOffHandItemKind::Shield;
+        Equipment.CurrentOffHandWeaponCategory = EWeaponCategory::OneHandedSword;
+    }
     Outcome.Result = EEquipResult::Success;
     return Outcome;
 }
@@ -104,6 +109,8 @@ FMainHandEquipOutcome UCharacterEquipmentFunctionLibrary::EquipMainHandWeapon(FC
             Outcome.bHadBumpedOffHand = true;
             Outcome.BumpedOffHand = *PreviousOffHand;
             Equipment.EquippedItems.Remove(EEquipmentSlot::OffHand);
+            Equipment.CurrentOffHandKind = EOffHandItemKind::Shield;
+            Equipment.CurrentOffHandWeaponCategory = EWeaponCategory::OneHandedSword;
         }
     }
     else if (const FGearItem* CurrentOffHand = Equipment.GetEquippedItem(EEquipmentSlot::OffHand))
@@ -130,6 +137,8 @@ FMainHandEquipOutcome UCharacterEquipmentFunctionLibrary::EquipMainHandWeapon(FC
             Outcome.bHadBumpedOffHand = true;
             Outcome.BumpedOffHand = *CurrentOffHand;
             Equipment.EquippedItems.Remove(EEquipmentSlot::OffHand);
+            Equipment.CurrentOffHandKind = EOffHandItemKind::Shield;
+            Equipment.CurrentOffHandWeaponCategory = EWeaponCategory::OneHandedSword;
         }
     }
 
@@ -153,6 +162,7 @@ FMainHandEquipOutcome UCharacterEquipmentFunctionLibrary::UnequipMainHandWeapon(
     Outcome.bHadPreviousMainHand = true;
     Outcome.PreviousMainHand = *ExistingMainHand;
     Equipment.EquippedItems.Remove(EEquipmentSlot::MainHand);
+    Equipment.MainHandWeaponCategory = EWeaponCategory::OneHandedSword;
 
     // With no MainHand weapon, only a bare Shield remains a valid OffHand
     // occupant — a Quiver or dual-wielded weapon has nothing to pair with.
@@ -163,6 +173,8 @@ FMainHandEquipOutcome UCharacterEquipmentFunctionLibrary::UnequipMainHandWeapon(
             Outcome.bHadBumpedOffHand = true;
             Outcome.BumpedOffHand = *CurrentOffHand;
             Equipment.EquippedItems.Remove(EEquipmentSlot::OffHand);
+            Equipment.CurrentOffHandKind = EOffHandItemKind::Shield;
+            Equipment.CurrentOffHandWeaponCategory = EWeaponCategory::OneHandedSword;
         }
     }
 

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "BaseCharacterStats.generated.h"
+#include "CharacterStats.generated.h"
 
 // ---------------------------------------------------------------------------
 // Character

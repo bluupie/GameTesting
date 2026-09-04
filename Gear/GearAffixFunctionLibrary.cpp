@@ -148,14 +148,31 @@ float UGearAffixFunctionLibrary::RollAffixValue(const FAffixTier& Tier)
 
 FGearItem UGearAffixFunctionLibrary::GenerateGearItem(FName ItemId, const FString& ItemName, EGearSlot Slot, int32 ItemLevel,
                                                         EItemRarity Rarity, const TArray<FAffixDefinition>& AffixPool,
-                                                        float RareFullAffixChance)
+                                                        float RareFullAffixChance, int32 RandomSeed)
 {
     FGearItem Item;
-    Item.ItemId = ItemId;
+    Item.BaseItemId = ItemId;
+    Item.ItemId = FName(*FGuid::NewGuid().ToString(EGuidFormats::Digits));
     Item.ItemName = ItemName;
     Item.GearSlot = Slot;
     Item.ItemLevel = ItemLevel;
     Item.Rarity = Rarity;
+    Item.GenerationSeed = RandomSeed != 0 ? RandomSeed : FMath::Rand();
+    FRandomStream RandomStream(Item.GenerationSeed);
+
+    auto SeededWeightedPick = [&RandomStream](int32 Count, auto&& GetWeight) -> int32
+    {
+        int32 ChosenIndex = INDEX_NONE;
+        float TotalWeight = 0.0f;
+        for (int32 Index = 0; Index < Count; ++Index)
+        {
+            const float Weight = FMath::Max(0.0f, GetWeight(Index));
+            if (Weight <= 0.0f) continue;
+            TotalWeight += Weight;
+            if (RandomStream.FRand() * TotalWeight < Weight) ChosenIndex = Index;
+        }
+        return ChosenIndex;
+    };
 
     int32 MinPrefixes, MaxPrefixes, MinSuffixes, MaxSuffixes;
     GetAffixCountRangeForRarity(Rarity, MinPrefixes, MaxPrefixes, MinSuffixes, MaxSuffixes);
@@ -177,7 +194,7 @@ FGearItem UGearAffixFunctionLibrary::GenerateGearItem(FName ItemId, const FStrin
         // Correlated roll: the item lands on the full affix count on BOTH
         // sides or the base count on BOTH sides, so a Rare never ends up
         // lopsided (e.g. 3 prefixes but only 2 suffixes).
-        const bool bFullRoll = FMath::FRand() < RareFullAffixChance;
+        const bool bFullRoll = RandomStream.FRand() < FMath::Clamp(RareFullAffixChance, 0.0f, 1.0f);
         NumPrefixes = bFullRoll ? MaxPrefixes : MinPrefixes;
         NumSuffixes = bFullRoll ? MaxSuffixes : MinSuffixes;
     }
@@ -199,10 +216,11 @@ FGearItem UGearAffixFunctionLibrary::GenerateGearItem(FName ItemId, const FStrin
             // Weighted reservoir pick over EligibleIndices, skipping any
             // affix whose group is already used (weight 0 = ineligible).
             // No "Remaining" array is built to do this filtering.
-            const int32 LocalPick = WeightedReservoirPick(EligibleIndices.Num(), [&](int32 LocalIdx)
+            const int32 LocalPick = SeededWeightedPick(EligibleIndices.Num(), [&](int32 LocalIdx)
             {
                 const FAffixDefinition& Def = AffixPool[EligibleIndices[LocalIdx]];
-                return UsedGroups.Contains(Def.AffixGroup) ? 0.0f : FMath::Max(Def.SpawnWeight, 0.0f);
+                return (!Def.AffixGroup.IsNone() && UsedGroups.Contains(Def.AffixGroup))
+                    ? 0.0f : FMath::Max(Def.SpawnWeight, 0.0f);
             });
 
             if (LocalPick < 0)
@@ -211,7 +229,11 @@ FGearItem UGearAffixFunctionLibrary::GenerateGearItem(FName ItemId, const FStrin
             }
 
             const FAffixDefinition& Chosen = AffixPool[EligibleIndices[LocalPick]];
-            const int32 TierIdx = RollTierIndexForAffix(Chosen, ItemLevel);
+            const int32 TierIdx = SeededWeightedPick(Chosen.Tiers.Num(), [&](int32 TierIndex)
+            {
+                const FAffixTier& Candidate = Chosen.Tiers[TierIndex];
+                return Candidate.RequiredItemLevel <= ItemLevel ? FMath::Max(Candidate.Weight, 0.0f) : 0.0f;
+            });
             if (TierIdx < 0)
             {
                 continue; // shouldn't happen since Chosen came from GetEligibleAffixes, but stay defensive
@@ -222,10 +244,15 @@ FGearItem UGearAffixFunctionLibrary::GenerateGearItem(FName ItemId, const FStrin
             FRolledAffix Rolled;
             Rolled.AffixId = Chosen.AffixId;
             Rolled.TierNumber = Tier.TierNumber;
-            Rolled.RolledValue = RollAffixValue(Tier);
+            Rolled.RolledValue = RandomStream.FRandRange(Tier.MinRoll, Tier.MaxRoll);
             OutAffixes.Add(Rolled);
 
-            UsedGroups.Add(Chosen.AffixGroup);
+            // NAME_None means "no exclusion group"; it must not make every
+            // otherwise-ungrouped affix mutually exclusive with every other.
+            if (!Chosen.AffixGroup.IsNone())
+            {
+                UsedGroups.Add(Chosen.AffixGroup);
+            }
         }
     };
 
