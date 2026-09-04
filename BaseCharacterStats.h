@@ -52,13 +52,13 @@ struct FBaseAttributes
     GENERATED_BODY()
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character")
-    int32 Strength = 10;
+    int32 Strength = 10; // Suffix -- All
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character")
-    int32 Dexterity = 10;
+    int32 Dexterity = 10; // Suffix - All
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character")
-    int32 Intelligence = 10;
+    int32 Intelligence = 10; // Suffix -- All
 };
 
 // ---------------------------------------------------------------------------
@@ -68,37 +68,36 @@ struct FBaseAttributes
 UENUM(BlueprintType)
 enum class EStatType : uint8
 {
-    Life,
-    Mana,
-    Barrier,
-    DamagePhysical,
-    DamageFire,
-    DamageCold,
-    DamageLightning,
-    DamagePoison,
-    CriticalStrikeChance,
-    CriticalStrikeMultiplier,
-    AttackSpeed,
-    MovementSpeed,
-    Armour,
-    FireResistance,
-    ColdResistance,
-    LightningResistance,
-    PoisonResistance,
-    Evasion,
-    BlockChance,
-    LifeLeech,
-    ManaLeech,
-    EnergyShield,
-    Accuracy,
-    DodgeChance,
-    SpellBlock,
-    SpellDamage,
-    CastSpeed,
-    CooldownReduction,
-    HealthRegen,
-    ManaRegen,
-    AoeRadius
+    Life, // Prefix -- Everything but Weapons
+    Mana, // Prefix -- Everything
+    Barrier, // Prefix -- Everything But Weaopons
+    DamagePhysical, // Prefix -- Weapons, Gloves, Rings, Weapons
+    DamageFire, // Prefix -- Weapons, Gloves, Rings, Weapons
+    DamageCold, // Prefix -- Weapons, Gloves, Ring, sWeapons
+    DamageLightning, // Prefix -- Weapons, Gloves, Rings, Weapons 
+    DamagePoison, // Prefix -- Weapons, Gloves, Rings
+    CriticalStrikeChance, // Suffix -- Weapons, Rings
+    CriticalStrikeMultiplier, // Suffix -- Weapons, Rings
+    AttackSpeed, // Suffix -- Weapons (Phsycial), Rings, Gloves
+    MovementSpeed, // Prefix -- Boots
+    Armour, // Prefix -- Everything but weapons
+    FireResistance, // Prefix -- Everything but weapons
+    ColdResistance, // Prefix -- Everything but weapons
+    LightningResistance, // Prefix -- Everything but weapons
+    PoisonResistance, // Prefix -- Everything but weapons
+    Evasion, // Prefix -- Everything but weapons
+    BlockChance, // Prefix -- Shields
+    LifeLeech, // Suffix -- Gloves, Weapons, Rings
+    ManaLeech, // Suffix -- Gloves, Weapons, Rings
+    // Accuracy,
+    DodgeChance, // Not an affix, but a stat solely inncreased by evasion
+    SpellBlock, // Prefix -- Shields
+    SpellDamage, // Prefix -- Weapons (Caster)
+    CastSpeed, // Suffix -- Weapons (Caster), Rings, Gloves
+    CooldownReduction, // Undetermined
+    HealthRegen, // Suffix -- Everything but weapons
+    ManaRegen, // Suffix -- Everything but weapons
+    AoeRadius // Undetermined
 };
 
 // ---------------------------------------------------------------------------

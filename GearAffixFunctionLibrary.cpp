@@ -1,4 +1,5 @@
 #include "GearAffixFunctionLibrary.h"
+#include "Templates/Function.h" // TFunctionRef, used by the internal ApplyAffixesToContribution helper
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -16,32 +17,28 @@ const FAffixDefinition* UGearAffixFunctionLibrary::FindDefinition(const TArray<F
     return nullptr;
 }
 
-// Walks a cumulative-weight line and returns the index whose bucket a random
-// roll landed in. Returns -1 for an empty or all-zero-weight array.
-int32 UGearAffixFunctionLibrary::PickWeightedIndex(const TArray<float>& Weights)
+const FAffixDefinition* UGearAffixFunctionLibrary::FindDefinitionIndexed(const TArray<FAffixDefinition>& AffixPool,
+                                                                           const TMap<FName, int32>& AffixIndex, FName AffixId)
 {
-    float TotalWeight = 0.0f;
-    for (float W : Weights)
+    if (const int32* Index = AffixIndex.Find(AffixId))
     {
-        TotalWeight += FMath::Max(W, 0.0f);
-    }
-
-    if (TotalWeight <= 0.0f)
-    {
-        return -1;
-    }
-
-    float Roll = FMath::FRandRange(0.0f, TotalWeight);
-    float Cumulative = 0.0f;
-    for (int32 i = 0; i < Weights.Num(); ++i)
-    {
-        Cumulative += FMath::Max(Weights[i], 0.0f);
-        if (Roll <= Cumulative)
+        if (AffixPool.IsValidIndex(*Index) && AffixPool[*Index].AffixId == AffixId)
         {
-            return i;
+            return &AffixPool[*Index];
         }
     }
-    return Weights.Num() - 1; // floating point edge case — fall back to last entry
+    return nullptr;
+}
+
+TMap<FName, int32> UGearAffixFunctionLibrary::BuildAffixIndex(const TArray<FAffixDefinition>& AffixPool)
+{
+    TMap<FName, int32> Index;
+    Index.Reserve(AffixPool.Num());
+    for (int32 i = 0; i < AffixPool.Num(); ++i)
+    {
+        Index.Add(AffixPool[i].AffixId, i);
+    }
+    return Index;
 }
 
 // ---------------------------------------------------------------------------
@@ -80,19 +77,20 @@ void UGearAffixFunctionLibrary::GetAffixCountRangeForRarity(EItemRarity Rarity, 
 // Eligibility / rolling
 // ---------------------------------------------------------------------------
 
-TArray<FAffixDefinition> UGearAffixFunctionLibrary::GetEligibleAffixes(const TArray<FAffixDefinition>& AffixPool, EAffixType AffixType,
-                                                                         EGearSlot Slot, int32 ItemLevel)
+TArray<int32> UGearAffixFunctionLibrary::GetEligibleAffixes(const TArray<FAffixDefinition>& AffixPool, EAffixType AffixType,
+                                                              EGearSlot Slot, int32 ItemLevel)
 {
-    TArray<FAffixDefinition> Result;
-    for (const FAffixDefinition& Def : AffixPool)
+    TArray<int32> Result;
+    for (int32 i = 0; i < AffixPool.Num(); ++i)
     {
+        const FAffixDefinition& Def = AffixPool[i];
         if (Def.AffixType != AffixType || !Def.IsEligibleForSlot(Slot))
         {
             continue;
         }
-        if (Def.GetUnlockedTierIndices(ItemLevel).Num() > 0)
+        if (Def.HasUnlockedTier(ItemLevel)) // non-allocating check — see FAffixDefinition::HasUnlockedTier
         {
-            Result.Add(Def);
+            Result.Add(i);
         }
     }
     return Result;
@@ -100,21 +98,13 @@ TArray<FAffixDefinition> UGearAffixFunctionLibrary::GetEligibleAffixes(const TAr
 
 int32 UGearAffixFunctionLibrary::RollTierIndexForAffix(const FAffixDefinition& Affix, int32 ItemLevel)
 {
-    TArray<int32> Unlocked = Affix.GetUnlockedTierIndices(ItemLevel);
-    if (Unlocked.Num() == 0)
+    // Single-pass weighted reservoir pick directly over Affix.Tiers — no
+    // intermediate "unlocked indices" or "weights" array is built.
+    return WeightedReservoirPick(Affix.Tiers.Num(), [&Affix, ItemLevel](int32 i)
     {
-        return -1;
-    }
-
-    TArray<float> Weights;
-    Weights.Reserve(Unlocked.Num());
-    for (int32 TierIdx : Unlocked)
-    {
-        Weights.Add(Affix.Tiers[TierIdx].Weight);
-    }
-
-    const int32 PickedLocal = PickWeightedIndex(Weights);
-    return (PickedLocal >= 0) ? Unlocked[PickedLocal] : -1;
+        const FAffixTier& Tier = Affix.Tiers[i];
+        return (Tier.RequiredItemLevel <= ItemLevel) ? FMath::Max(Tier.Weight, 0.0f) : 0.0f;
+    });
 }
 
 float UGearAffixFunctionLibrary::RollAffixValue(const FAffixTier& Tier)
@@ -166,38 +156,31 @@ FGearItem UGearAffixFunctionLibrary::GenerateGearItem(FName ItemId, const FStrin
 
     auto RollSide = [&](EAffixType Type, int32 Count, TArray<FRolledAffix>& OutAffixes)
     {
-        TArray<FAffixDefinition> Candidates = GetEligibleAffixes(AffixPool, Type, Slot, ItemLevel);
+        // Indices only — no struct copies. EligibleIndices is built once per
+        // side (small, just int32s) and reused across every affix rolled for it.
+        const TArray<int32> EligibleIndices = GetEligibleAffixes(AffixPool, Type, Slot, ItemLevel);
+        if (EligibleIndices.Num() == 0)
+        {
+            return;
+        }
 
         for (int32 i = 0; i < Count; ++i)
         {
-            // Filter out groups already used on this item.
-            TArray<FAffixDefinition> Remaining;
-            for (const FAffixDefinition& Def : Candidates)
+            // Weighted reservoir pick over EligibleIndices, skipping any
+            // affix whose group is already used (weight 0 = ineligible).
+            // No "Remaining" array is built to do this filtering.
+            const int32 LocalPick = WeightedReservoirPick(EligibleIndices.Num(), [&](int32 LocalIdx)
             {
-                if (!UsedGroups.Contains(Def.AffixGroup))
-                {
-                    Remaining.Add(Def);
-                }
-            }
-            if (Remaining.Num() == 0)
+                const FAffixDefinition& Def = AffixPool[EligibleIndices[LocalIdx]];
+                return UsedGroups.Contains(Def.AffixGroup) ? 0.0f : FMath::Max(Def.SpawnWeight, 0.0f);
+            });
+
+            if (LocalPick < 0)
             {
                 break; // ran out of distinct affix groups to roll — stop early rather than duplicate
             }
 
-            TArray<float> Weights;
-            Weights.Reserve(Remaining.Num());
-            for (const FAffixDefinition& Def : Remaining)
-            {
-                Weights.Add(Def.SpawnWeight);
-            }
-
-            const int32 PickedIdx = PickWeightedIndex(Weights);
-            if (PickedIdx < 0)
-            {
-                break;
-            }
-
-            const FAffixDefinition& Chosen = Remaining[PickedIdx];
+            const FAffixDefinition& Chosen = AffixPool[EligibleIndices[LocalPick]];
             const int32 TierIdx = RollTierIndexForAffix(Chosen, ItemLevel);
             if (TierIdx < 0)
             {
@@ -226,30 +209,44 @@ FGearItem UGearAffixFunctionLibrary::GenerateGearItem(FName ItemId, const FStrin
 // Pool building / display
 // ---------------------------------------------------------------------------
 
-FModifierPool UGearAffixFunctionLibrary::BuildModifierPoolFromGear(const FGearItem& Item, const TArray<FAffixDefinition>& AffixPool)
+static FGearStatContribution ApplyAffixesToContribution(const FGearItem& Item,
+                                                          TFunctionRef<const FAffixDefinition*(FName)> Lookup)
 {
-    FModifierPool Pool;
+    FGearStatContribution Contribution;
 
     auto ApplySide = [&](const TArray<FRolledAffix>& Affixes)
     {
         for (const FRolledAffix& Rolled : Affixes)
         {
-            const FAffixDefinition* Def = FindDefinition(AffixPool, Rolled.AffixId);
+            const FAffixDefinition* Def = Lookup(Rolled.AffixId);
             if (!Def)
             {
                 continue; // AffixId not found in the pool passed in — data mismatch, skip rather than crash
             }
 
+            if (Def->TargetType == EAffixTargetType::Attribute)
+            {
+                // Attribute affixes are always a flat addition — apply
+                // BEFORE FCharacterStats::Recalculate, not through the pool.
+                switch (Def->AttributeType)
+                {
+                    case EBaseAttributeType::Strength:     Contribution.BonusStrength += Rolled.RolledValue; break;
+                    case EBaseAttributeType::Dexterity:    Contribution.BonusDexterity += Rolled.RolledValue; break;
+                    case EBaseAttributeType::Intelligence: Contribution.BonusIntelligence += Rolled.RolledValue; break;
+                }
+                continue;
+            }
+
             switch (Def->ModApplication)
             {
                 case EModifierApplication::Flat:
-                    Pool.AddFlat(Def->StatType, Rolled.RolledValue);
+                    Contribution.StatPool.AddFlat(Def->StatType, Rolled.RolledValue);
                     break;
                 case EModifierApplication::Increased:
-                    Pool.AddIncreased(Def->StatType, Rolled.RolledValue);
+                    Contribution.StatPool.AddIncreased(Def->StatType, Rolled.RolledValue);
                     break;
                 case EModifierApplication::More:
-                    Pool.AddMore(Def->StatType, Rolled.RolledValue);
+                    Contribution.StatPool.AddMore(Def->StatType, Rolled.RolledValue);
                     break;
             }
         }
@@ -258,7 +255,18 @@ FModifierPool UGearAffixFunctionLibrary::BuildModifierPoolFromGear(const FGearIt
     ApplySide(Item.PrefixAffixes);
     ApplySide(Item.SuffixAffixes);
 
-    return Pool;
+    return Contribution;
+}
+
+FGearStatContribution UGearAffixFunctionLibrary::BuildModifierPoolFromGear(const FGearItem& Item, const TArray<FAffixDefinition>& AffixPool)
+{
+    return ApplyAffixesToContribution(Item, [&AffixPool](FName Id) { return FindDefinition(AffixPool, Id); });
+}
+
+FGearStatContribution UGearAffixFunctionLibrary::BuildModifierPoolFromGearIndexed(const FGearItem& Item, const TArray<FAffixDefinition>& AffixPool,
+                                                                                   const TMap<FName, int32>& AffixIndex)
+{
+    return ApplyAffixesToContribution(Item, [&AffixPool, &AffixIndex](FName Id) { return FindDefinitionIndexed(AffixPool, AffixIndex, Id); });
 }
 
 FString UGearAffixFunctionLibrary::DescribeAffix(const FRolledAffix& Rolled, const TArray<FAffixDefinition>& AffixPool)
@@ -268,293 +276,225 @@ FString UGearAffixFunctionLibrary::DescribeAffix(const FRolledAffix& Rolled, con
     {
         return FString::Printf(TEXT("<unknown affix %s>"), *Rolled.AffixId.ToString());
     }
-    return FString::Printf(*Def->DisplayFormat, Rolled.RolledValue);
+    const float DisplayValue = Def->bIsPercentageValue ? Rolled.RolledValue * 100.0f : Rolled.RolledValue;
+    return FString::Printf(*Def->DisplayFormat, DisplayValue);
+}
+
+FString UGearAffixFunctionLibrary::DescribeAffixIndexed(const FRolledAffix& Rolled, const TArray<FAffixDefinition>& AffixPool,
+                                                          const TMap<FName, int32>& AffixIndex)
+{
+    const FAffixDefinition* Def = FindDefinitionIndexed(AffixPool, AffixIndex, Rolled.AffixId);
+    if (!Def)
+    {
+        return FString::Printf(TEXT("<unknown affix %s>"), *Rolled.AffixId.ToString());
+    }
+    const float DisplayValue = Def->bIsPercentageValue ? Rolled.RolledValue * 100.0f : Rolled.RolledValue;
+    return FString::Printf(*Def->DisplayFormat, DisplayValue);
+}
+
+TArray<FAffixTier> UGearAffixFunctionLibrary::BuildTierProgression(float Tier9Min, float Tier9Max, float Tier1Min, float Tier1Max,
+                                                                     int32 Tier9ItemLevel, int32 Tier1ItemLevel,
+                                                                     float Tier9Weight, float Tier1Weight)
+{
+    TArray<FAffixTier> Tiers;
+    Tiers.Reserve(9);
+    for (int32 TierNumber = 9; TierNumber >= 1; --TierNumber)
+    {
+        const float Alpha = static_cast<float>(9 - TierNumber) / 8.0f; // 0 at Tier 9, 1 at Tier 1
+
+        FAffixTier Tier;
+        Tier.TierNumber = TierNumber;
+        Tier.MinRoll = FMath::Lerp(Tier9Min, Tier1Min, Alpha);
+        Tier.MaxRoll = FMath::Lerp(Tier9Max, Tier1Max, Alpha);
+        Tier.RequiredItemLevel = FMath::RoundToInt(FMath::Lerp(static_cast<float>(Tier9ItemLevel), static_cast<float>(Tier1ItemLevel), Alpha));
+        Tier.Weight = FMath::Lerp(Tier9Weight, Tier1Weight, Alpha);
+        Tiers.Add(Tier);
+    }
+    return Tiers;
+}
+
+int32 UGearAffixFunctionLibrary::MakeSlotMask(const TArray<EGearSlot>& Slots)
+{
+    int32 Mask = 0;
+    for (EGearSlot Slot : Slots)
+    {
+        Mask |= GetGearSlotBit(Slot);
+    }
+    return Mask;
+}
+
+int32 UGearAffixFunctionLibrary::GetAllGearSlotsMask()
+{
+    return MakeSlotMask({ EGearSlot::Weapon, EGearSlot::OffHand, EGearSlot::Helmet, EGearSlot::Chest, EGearSlot::Gloves,
+                           EGearSlot::Boots, EGearSlot::Belt, EGearSlot::Amulet, EGearSlot::Ring });
+}
+
+int32 UGearAffixFunctionLibrary::GetNonWeaponGearSlotsMask()
+{
+    return MakeSlotMask({ EGearSlot::OffHand, EGearSlot::Helmet, EGearSlot::Chest, EGearSlot::Gloves,
+                           EGearSlot::Boots, EGearSlot::Belt, EGearSlot::Amulet, EGearSlot::Ring });
 }
 
 // ---------------------------------------------------------------------------
 // Example seed data
 // ---------------------------------------------------------------------------
 //
-// Tier progression follows the requested pattern: Tier 9 is the weakest
-// roll with no item level requirement, Tier 1 is the strongest roll and
-// requires the highest item level. "Added Physical Damage" below matches
-// the example exactly (T9: 1-4, T1: 100-200); the other affixes follow the
-// same shape scaled to their own stat.
+// One affix per EStatType that carries a Prefix/Suffix designation, plus
+// Strength/Dexterity/Intelligence as attribute-targeting suffixes. Skipped
+// intentionally, per their annotations: DodgeChance (not an affix — solely
+// derived from Evasion), CooldownReduction and AoeRadius (undetermined
+// design, no Prefix/Suffix assigned yet). EnergyShield/BlockAmount/Accuracy
+// are not present here as they've been removed from EStatType.
+//
+// Every affix uses the same Tier 9 -> Tier 1 item level span (1 -> 85) and
+// weight falloff (100 -> 6) via BuildTierProgression; only the roll range
+// differs per stat. Adjust the shared constants below, or pass different
+// values per affix, to change that.
 
 TArray<FAffixDefinition> UGearAffixFunctionLibrary::GetExampleAffixTable()
 {
     TArray<FAffixDefinition> Table;
 
-    // --- Prefix: Added Physical Damage (Weapon) ---------------------------
-    {
-        FAffixDefinition Def;
-        Def.AffixId = FName("Prefix_AddedPhysicalDamage");
-        Def.DisplayFormat = TEXT("+%.0f to Physical Damage");
-        Def.AffixType = EAffixType::Prefix;
-        Def.StatType = EStatType::DamagePhysical;
-        Def.ModApplication = EModifierApplication::Flat;
-        Def.AffixGroup = FName("PhysDmgFlat");
-        Def.AllowedSlots = { EGearSlot::Weapon };
-        Def.SpawnWeight = 100.0f;
-        Def.Tiers = {
-            { 9, 1.0f,   4.0f,   1,  100.0f },
-            { 8, 4.0f,   8.0f,   8,  90.0f  },
-            { 7, 8.0f,   14.0f,  15, 80.0f  },
-            { 6, 14.0f,  22.0f,  24, 65.0f  },
-            { 5, 22.0f,  35.0f,  34, 50.0f  },
-            { 4, 35.0f,  52.0f,  45, 38.0f  },
-            { 3, 52.0f,  75.0f,  58, 26.0f  },
-            { 2, 75.0f,  100.0f, 72, 14.0f  },
-            { 1, 100.0f, 200.0f, 85, 6.0f   },
-        };
-        Table.Add(Def);
-    }
+    const int32 AllSlots = GetAllGearSlotsMask();
+    const int32 NonWeaponSlots = GetNonWeaponGearSlotsMask();
+    const int32 WeaponGlovesRing = MakeSlotMask({ EGearSlot::Weapon, EGearSlot::Gloves, EGearSlot::Ring });
+    const int32 WeaponRing = MakeSlotMask({ EGearSlot::Weapon, EGearSlot::Ring });
+    const int32 WeaponRingGloves = MakeSlotMask({ EGearSlot::Weapon, EGearSlot::Ring, EGearSlot::Gloves });
+    const int32 BootsOnly = MakeSlotMask({ EGearSlot::Boots });
+    const int32 OffHandOnly = MakeSlotMask({ EGearSlot::OffHand });
+    const int32 WeaponOnly = MakeSlotMask({ EGearSlot::Weapon });
 
-    // --- Prefix: Increased Physical Damage % (Weapon) ----------------------
-    {
-        FAffixDefinition Def;
-        Def.AffixId = FName("Prefix_IncreasedPhysicalDamage");
-        Def.DisplayFormat = TEXT("%.0f%% increased Physical Damage");
-        Def.AffixType = EAffixType::Prefix;
-        Def.StatType = EStatType::DamagePhysical;
-        Def.ModApplication = EModifierApplication::Increased;
-        Def.AffixGroup = FName("PhysDmgPercent");
-        Def.AllowedSlots = { EGearSlot::Weapon };
-        Def.SpawnWeight = 80.0f;
-        // Stored as fractions (0.10 = 10%) to match FStatModifier::Percent's convention.
-        Def.Tiers = {
-            { 9, 0.10f, 0.15f, 1,  100.0f },
-            { 8, 0.16f, 0.22f, 8,  90.0f  },
-            { 7, 0.23f, 0.30f, 16, 80.0f  },
-            { 6, 0.31f, 0.40f, 26, 65.0f  },
-            { 5, 0.41f, 0.50f, 36, 50.0f  },
-            { 4, 0.51f, 0.62f, 48, 38.0f  },
-            { 3, 0.63f, 0.75f, 60, 26.0f  },
-            { 2, 0.76f, 0.88f, 74, 14.0f  },
-            { 1, 0.89f, 1.00f, 88, 6.0f   },
-        };
-        Table.Add(Def);
-    }
+    const int32 Tier9Ilvl = 1;
+    const int32 Tier1Ilvl = 85;
+    const float Tier9Weight = 100.0f;
+    const float Tier1Weight = 6.0f;
 
-    // --- Suffix: Critical Strike Chance % (Weapon) --------------------------
+    auto AddStatAffix = [&](FName Id, const FString& Format, EAffixType Type, EStatType Stat, EModifierApplication App,
+                             FName Group, int32 SlotsMask, float SpawnWeight,
+                             float T9Min, float T9Max, float T1Min, float T1Max, bool bIsPercent = false)
     {
         FAffixDefinition Def;
-        Def.AffixId = FName("Suffix_CriticalStrikeChance");
-        Def.DisplayFormat = TEXT("Sharpened (+%.0f%% increased Critical Strike Chance)");
+        Def.AffixId = Id;
+        Def.DisplayFormat = Format;
+        Def.AffixType = Type;
+        Def.TargetType = EAffixTargetType::Stat;
+        Def.StatType = Stat;
+        Def.ModApplication = App;
+        Def.AffixGroup = Group;
+        Def.AllowedSlotsMask = SlotsMask;
+        Def.SpawnWeight = SpawnWeight;
+        Def.bIsPercentageValue = bIsPercent;
+        Def.Tiers = BuildTierProgression(T9Min, T9Max, T1Min, T1Max, Tier9Ilvl, Tier1Ilvl, Tier9Weight, Tier1Weight);
+        Table.Add(Def);
+    };
+
+    auto AddAttributeAffix = [&](FName Id, const FString& Format, EBaseAttributeType Attr, FName Group,
+                                  float SpawnWeight, float T9Min, float T9Max, float T1Min, float T1Max)
+    {
+        FAffixDefinition Def;
+        Def.AffixId = Id;
+        Def.DisplayFormat = Format;
         Def.AffixType = EAffixType::Suffix;
-        Def.StatType = EStatType::CriticalStrikeChance;
-        Def.ModApplication = EModifierApplication::Increased;
-        Def.AffixGroup = FName("CritChance");
-        Def.AllowedSlots = { EGearSlot::Weapon };
-        Def.SpawnWeight = 60.0f;
-        Def.Tiers = {
-            { 9, 0.10f, 0.15f, 1,  100.0f },
-            { 8, 0.16f, 0.22f, 10, 90.0f  },
-            { 7, 0.23f, 0.30f, 20, 80.0f  },
-            { 6, 0.31f, 0.40f, 30, 65.0f  },
-            { 5, 0.41f, 0.50f, 40, 50.0f  },
-            { 4, 0.51f, 0.62f, 52, 38.0f  },
-            { 3, 0.63f, 0.75f, 64, 26.0f  },
-            { 2, 0.76f, 0.90f, 76, 14.0f  },
-            { 1, 0.91f, 1.05f, 88, 6.0f   },
-        };
+        Def.TargetType = EAffixTargetType::Attribute;
+        Def.AttributeType = Attr;
+        Def.ModApplication = EModifierApplication::Flat;
+        Def.AffixGroup = Group;
+        Def.AllowedSlotsMask = AllSlots;
+        Def.SpawnWeight = SpawnWeight;
+        Def.bIsPercentageValue = false;
+        Def.Tiers = BuildTierProgression(T9Min, T9Max, T1Min, T1Max, Tier9Ilvl, Tier1Ilvl, Tier9Weight, Tier1Weight);
         Table.Add(Def);
-    }
+    };
 
-    // --- Suffix: Attack Speed % (Weapon) -------------------------------------
-    {
-        FAffixDefinition Def;
-        Def.AffixId = FName("Suffix_AttackSpeed");
-        Def.DisplayFormat = TEXT("of Haste (+%.0f%% increased Attack Speed)");
-        Def.AffixType = EAffixType::Suffix;
-        Def.StatType = EStatType::AttackSpeed;
-        Def.ModApplication = EModifierApplication::Increased;
-        Def.AffixGroup = FName("AttackSpeed");
-        Def.AllowedSlots = { EGearSlot::Weapon };
-        Def.SpawnWeight = 70.0f;
-        Def.Tiers = {
-            { 9, 0.03f, 0.05f, 1,  100.0f },
-            { 8, 0.06f, 0.08f, 10, 90.0f  },
-            { 7, 0.09f, 0.11f, 20, 80.0f  },
-            { 6, 0.12f, 0.14f, 30, 65.0f  },
-            { 5, 0.15f, 0.17f, 40, 50.0f  },
-            { 4, 0.18f, 0.20f, 50, 38.0f  },
-            { 3, 0.21f, 0.23f, 62, 26.0f  },
-            { 2, 0.24f, 0.27f, 74, 14.0f  },
-            { 1, 0.28f, 0.32f, 86, 6.0f   },
-        };
-        Table.Add(Def);
-    }
+    // --- Attributes (Suffix -- All) -----------------------------------------
+    AddAttributeAffix(FName("Suffix_Strength"), TEXT("of the Bear (+%.0f to Strength)"),
+                       EBaseAttributeType::Strength, FName("AttrStrength"), 100.0f, 3.0f, 6.0f, 40.0f, 65.0f);
+    AddAttributeAffix(FName("Suffix_Dexterity"), TEXT("of the Fox (+%.0f to Dexterity)"),
+                       EBaseAttributeType::Dexterity, FName("AttrDexterity"), 100.0f, 3.0f, 6.0f, 40.0f, 65.0f);
+    AddAttributeAffix(FName("Suffix_Intelligence"), TEXT("of the Owl (+%.0f to Intelligence)"),
+                       EBaseAttributeType::Intelligence, FName("AttrIntelligence"), 100.0f, 3.0f, 6.0f, 40.0f, 65.0f);
 
-    // --- Prefix: Maximum Life (Armor) ---------------------------------------
-    {
-        FAffixDefinition Def;
-        Def.AffixId = FName("Prefix_MaximumLife");
-        Def.DisplayFormat = TEXT("of Vitality (+%.0f to Maximum Life)");
-        Def.AffixType = EAffixType::Prefix;
-        Def.StatType = EStatType::Life;
-        Def.ModApplication = EModifierApplication::Flat;
-        Def.AffixGroup = FName("Life");
-        Def.AllowedSlots = { EGearSlot::Helmet, EGearSlot::Chest, EGearSlot::Gloves, EGearSlot::Boots, EGearSlot::Belt, EGearSlot::Amulet, EGearSlot::Ring };
-        Def.SpawnWeight = 100.0f;
-        Def.Tiers = {
-            { 9, 5.0f,   12.0f,  1,  100.0f },
-            { 8, 13.0f,  22.0f,  8,  90.0f  },
-            { 7, 23.0f,  35.0f,  16, 80.0f  },
-            { 6, 36.0f,  52.0f,  26, 65.0f  },
-            { 5, 53.0f,  72.0f,  36, 50.0f  },
-            { 4, 73.0f,  95.0f,  48, 38.0f  },
-            { 3, 96.0f,  125.0f, 60, 26.0f  },
-            { 2, 126.0f, 160.0f, 74, 14.0f  },
-            { 1, 161.0f, 200.0f, 88, 6.0f   },
-        };
-        Table.Add(Def);
-    }
-    {
-        faffixDefinition Def;
-        Def.AffixId = FName("Prefix_MaximumMana");
-        Def.DisplayFormat = TEXT("of Clarity (+%.0f to Maximum Mana)");
-        Def.AffixType = EAffixType::Prefix;
-        Def.StatType = EStatType::Mana;
-        Def.ModApplication = EModifierApplication::Flat;
-        Def.AffixGroup = FName("Mana");
-        Def.AllowedSlots = { EGearSlot::Helmet, EGearSlot::Chest, EGearSlot::Gloves, EGearSlot::Boots, EGearSlot::Belt, EGearSlot::Amulet, EGearSlot::Ring };
-        Def.SpawnWeight = 100.0f;
-        Def.Tiers = {
-            { 9, 5.0f,   10.0f,  1,  100.0f },
-            { 8, 11.0f,  18.0f,  8,  90.0f  },
-            { 7, 19.0f,  28.0f,  16, 80.0f  },
-            { 6, 29.0f,  42.0f,  26, 65.0f  },
-            { 5, 43.0f,  60.0f,  36, 50.0f  },
-            { 4, 61.0f,  82.0f,  48, 38.0f  },
-            { 3, 83.0f, 110.0f,   60,26.0f },
-            {2 ,111.0f ,145.0f ,74 ,14.0f},
-            {1 ,146.0f ,200.0f ,88 ,6.0f}
-        };
-        Table.Add(Def);
-    }
-    {
-        FAffixDefinition Def;
-        Def.AffixId = FName("Prefix_MaximumEnergyShield");
-        Def.DisplayFormat = TEXT("of the Aegis (+%.0f to Maximum Energy Shield)");
-        Def.AffixType = EAffixType::Prefix;
-        Def.StatType = EStatType::EnergyShield;
-        Def.ModApplication = EModifierApplication::Flat;
-        Def.AffixGroup = FName("EnergyShield");
-        Def.AllowedSlots = { EGearSlot::Helmet, EGearSlot::Chest, EGearSlot::Gloves, EGearSlot::Boots, EGearSlot::Belt, EGearSlot::Amulet, EGearSlot::Ring };
-        Def.SpawnWeight = 100.0f;
-        Def.Tiers = {
-            { 9, 5.0f,   10.0f,  1,  100.0f },
-            { 8, 11.0f,  18.0f,  8,  90.0f  },
-            { 7, 19.0f,  28.0f,  16, 80.0f  },
-            { 6, 29.0f,  42.0f,  26, 65.0f  },
-            { 5, 43.0f,  60.0f,  36, 50.0f  },
-            { 4, 61.0f,  82.0f, 48 ,38.0f},
-            {3 ,83.0f ,110.0f ,60 ,26.0f},
-            {2 ,111.0f ,145.0f ,74 ,14.0f},
-            {1 ,146.0f ,200.0f ,88 ,6.0f}
-        };
-        Table.Add(Def);
-    }
+    // --- Prefixes ------------------------------------------------------------
+    AddStatAffix(FName("Prefix_Life"), TEXT("+%.0f to Maximum Life"), EAffixType::Prefix,
+                 EStatType::Life, EModifierApplication::Flat, FName("Life"), NonWeaponSlots, 100.0f,
+                 5.0f, 12.0f, 161.0f, 200.0f);
+    AddStatAffix(FName("Prefix_Mana"), TEXT("+%.0f to Maximum Mana"), EAffixType::Prefix,
+                 EStatType::Mana, EModifierApplication::Flat, FName("Mana"), AllSlots, 90.0f,
+                 4.0f, 8.0f, 90.0f, 120.0f);
+    AddStatAffix(FName("Prefix_Barrier"), TEXT("+%.0f to Barrier"), EAffixType::Prefix,
+                 EStatType::Barrier, EModifierApplication::Flat, FName("Barrier"), NonWeaponSlots, 70.0f,
+                 4.0f, 10.0f, 120.0f, 160.0f);
+    AddStatAffix(FName("Prefix_AddedPhysicalDamage"), TEXT("+%.0f to Physical Damage"), EAffixType::Prefix,
+                 EStatType::DamagePhysical, EModifierApplication::Flat, FName("PhysDmg"), WeaponGlovesRing, 100.0f,
+                 1.0f, 4.0f, 100.0f, 200.0f);
+    AddStatAffix(FName("Prefix_AddedFireDamage"), TEXT("+%.0f to Fire Damage"), EAffixType::Prefix,
+                 EStatType::DamageFire, EModifierApplication::Flat, FName("FireDmg"), WeaponGlovesRing, 80.0f,
+                 2.0f, 5.0f, 80.0f, 140.0f);
+    AddStatAffix(FName("Prefix_AddedColdDamage"), TEXT("+%.0f to Cold Damage"), EAffixType::Prefix,
+                 EStatType::DamageCold, EModifierApplication::Flat, FName("ColdDmg"), WeaponGlovesRing, 80.0f,
+                 2.0f, 5.0f, 80.0f, 140.0f);
+    AddStatAffix(FName("Prefix_AddedLightningDamage"), TEXT("+%.0f to Lightning Damage"), EAffixType::Prefix,
+                 EStatType::DamageLightning, EModifierApplication::Flat, FName("LightningDmg"), WeaponGlovesRing, 80.0f,
+                 3.0f, 8.0f, 100.0f, 180.0f);
+    AddStatAffix(FName("Prefix_AddedPoisonDamage"), TEXT("+%.0f to Poison Damage"), EAffixType::Prefix,
+                 EStatType::DamagePoison, EModifierApplication::Flat, FName("PoisonDmg"), WeaponGlovesRing, 70.0f,
+                 1.0f, 3.0f, 40.0f, 70.0f);
+    AddStatAffix(FName("Prefix_MovementSpeed"), TEXT("+%.0f%% increased Movement Speed"), EAffixType::Prefix,
+                 EStatType::MovementSpeed, EModifierApplication::Increased, FName("MoveSpeed"), BootsOnly, 100.0f,
+                 0.02f, 0.04f, 0.20f, 0.30f, /*bIsPercent=*/true);
+    AddStatAffix(FName("Prefix_Armour"), TEXT("+%.0f to Armour"), EAffixType::Prefix,
+                 EStatType::Armour, EModifierApplication::Flat, FName("Armour"), NonWeaponSlots, 100.0f,
+                 3.0f, 8.0f, 150.0f, 220.0f);
+    AddStatAffix(FName("Prefix_FireResistance"), TEXT("+%.0f%% to Fire Resistance"), EAffixType::Prefix,
+                 EStatType::FireResistance, EModifierApplication::Flat, FName("FireRes"), NonWeaponSlots, 90.0f,
+                 5.0f, 8.0f, 49.0f, 55.0f, /*bIsPercent=*/true);
+    AddStatAffix(FName("Prefix_ColdResistance"), TEXT("+%.0f%% to Cold Resistance"), EAffixType::Prefix,
+                 EStatType::ColdResistance, EModifierApplication::Flat, FName("ColdRes"), NonWeaponSlots, 90.0f,
+                 5.0f, 8.0f, 49.0f, 55.0f, /*bIsPercent=*/true);
+    AddStatAffix(FName("Prefix_LightningResistance"), TEXT("+%.0f%% to Lightning Resistance"), EAffixType::Prefix,
+                 EStatType::LightningResistance, EModifierApplication::Flat, FName("LightningRes"), NonWeaponSlots, 90.0f,
+                 5.0f, 8.0f, 49.0f, 55.0f, /*bIsPercent=*/true);
+    AddStatAffix(FName("Prefix_PoisonResistance"), TEXT("+%.0f%% to Poison Resistance"), EAffixType::Prefix,
+                 EStatType::PoisonResistance, EModifierApplication::Flat, FName("PoisonRes"), NonWeaponSlots, 90.0f,
+                 5.0f, 8.0f, 49.0f, 55.0f, /*bIsPercent=*/true);
+    AddStatAffix(FName("Prefix_Evasion"), TEXT("+%.0f to Evasion"), EAffixType::Prefix,
+                 EStatType::Evasion, EModifierApplication::Flat, FName("Evasion"), NonWeaponSlots, 100.0f,
+                 3.0f, 8.0f, 150.0f, 220.0f);
+    AddStatAffix(FName("Prefix_BlockChance"), TEXT("+%.0f%% increased Block Chance"), EAffixType::Prefix,
+                 EStatType::BlockChance, EModifierApplication::Flat, FName("BlockChance"), OffHandOnly, 60.0f,
+                 0.02f, 0.04f, 0.15f, 0.20f, /*bIsPercent=*/true);
+    AddStatAffix(FName("Prefix_SpellBlockChance"), TEXT("+%.0f%% increased Spell Block Chance"), EAffixType::Prefix,
+                 EStatType::SpellBlock, EModifierApplication::Flat, FName("SpellBlock"), OffHandOnly, 60.0f,
+                 0.02f, 0.04f, 0.15f, 0.20f, /*bIsPercent=*/true);
+    AddStatAffix(FName("Prefix_SpellDamage"), TEXT("+%.0f to Spell Damage"), EAffixType::Prefix,
+                 EStatType::SpellDamage, EModifierApplication::Flat, FName("SpellDamage"), WeaponOnly, 80.0f,
+                 5.0f, 10.0f, 100.0f, 180.0f);
 
-
-    // --- Suffix: Resistance (Armor / Amulet / Ring) ---------------------
-    {
-        FAffixDefinition Def;
-        Def.AffixId = FName("Suffix_FireResistance");
-        Def.DisplayFormat = TEXT("of the Ember (+%.0f%% to Fire Resistance)");
-        Def.AffixType = EAffixType::Suffix;
-        Def.StatType = EStatType::FireResistance;
-        Def.ModApplication = EModifierApplication::Flat;
-        Def.AffixGroup = FName("FireRes");
-        Def.AllowedSlots = { EGearSlot::Helmet, EGearSlot::Chest, EGearSlot::Gloves, EGearSlot::Boots,
-                              EGearSlot::Belt, EGearSlot::Amulet, EGearSlot::Ring };
-        Def.SpawnWeight = 90.0f;
-        Def.Tiers = {
-            { 9, 5.0f,  8.0f,  1,  100.0f },
-            { 8, 9.0f,  13.0f, 10, 90.0f  },
-            { 7, 14.0f, 18.0f, 20, 80.0f  },
-            { 6, 19.0f, 24.0f, 30, 65.0f  },
-            { 5, 25.0f, 30.0f, 40, 50.0f  },
-            { 4, 31.0f, 36.0f, 50, 38.0f  },
-            { 3, 37.0f, 42.0f, 60, 26.0f  },
-            { 2, 43.0f, 48.0f, 72, 14.0f  },
-            { 1, 49.0f, 55.0f, 84, 6.0f   },
-        };
-        Table.Add(Def);
-    }
-
-    {
-        FAffixDefinition Def;
-        Def.AffixId = FName("Suffix_ColdResistance");
-        Def.DisplayFormat = TEXT("of the Frost (+%.0f%% to Cold Resistance)");
-        Def.AffixType = EAffixType::Suffix;
-        Def.StatType = EStatType::ColdResistance;
-        Def.ModApplication = EModifierApplication::Flat;
-        Def.AffixGroup = FName("ColdRes");
-        Def.AllowedSlots = { EGearSlot::Helmet, EGearSlot::Chest, EGearSlot::Gloves, EGearSlot::Boots,
-                              EGearSlot::Belt, EGearSlot::Amulet, EGearSlot::Ring };
-        Def.SpawnWeight = 90.0f;
-        Def.Tiers = {
-            { 9, 5.0f,  8.0f,  1,  100.0f },
-            { 8, 9.0f,  13.0f, 10, 90.0f  },
-            { 7, 14.0f, 18.0f, 20, 80.0f  },
-            { 6, 19.0f, 24.0f, 30, 65.0f  },
-            { 5, 25.0f, 30.0f, 40, 50.0f  },
-            { 4, 31.0f, 36.0f, 50, 38.0f  },
-            { 3, 37.0f, 42.0f, 60, 26.0f  },
-            { 2, 43.0f, 48.0f, 72, 14.0f  },
-            { 1, 49.0f, 55.0f, 84, 6.0f   },
-        };
-        Table.Add(Def);
-    }
-    {
-        FAffixDefinition Def;
-        Def.AffixId = FName("Suffix_LightningResistance");
-        Def.DisplayFormat = TEXT("of the Storm (+%.0f%% to Lightning Resistance)");
-        Def.AffixType = EAffixType::Suffix;
-        Def.StatType = EStatType::LightningResistance;
-        Def.ModApplication = EModifierApplication::Flat;
-        Def.AffixGroup = FName("LightningRes");
-        Def.AllowedSlots = { EGearSlot::Helmet, EGearSlot::Chest,EGearSlot::Gloves, EGearSlot::Boots, EGearSlot::Belt, EGearSlot::Amulet, EGearSlot::Ring };
-        
-        Def.SpawnWeight = 90.0f;
-        Def.Tiers = {
-            { 9, 5.0f,  8.0f,  1,  100.0f },
-            { 8, 9.0f,  13.0f, 10, 90.0f  },
-            { 7, 14.0f, 18.0f, 20, 80.0f  },
-            { 6, 19.0f, 24.0f, 30, 65.0f  },
-            { 5, 25.0f, 30.0f, 40, 50.0f  },
-            { 4, 31.0f, 36.0f, 50, 38.0f  },
-            { 3, 37.0f, 42.0f, 60, 26.0f  },
-            { 2, 43.0f, 48.0f, 72, 14.0f  },
-            { 1, 49.0f, 55.0f, 84, 6.0f   },
-        };
-        Table.Add(Def);
-    }
-    {
-        FAffixDefinition Def;
-        Def.AffixId = FName("Suffix_PoisonResistance");
-        Def.DisplayFormat = TEXT("of the Venom (+%.0f%% to Poison Resistance)");
-        Def.AffixType = EAffixType::Suffix;
-        Def.StatType = EStatType::PoisonResistance;
-        Def.ModApplication = EModifierApplication::Flat;
-        Def.AffixGroup = FName("PoisonRes");
-        Def.AllowedSlots = { EGearSlot::Helmet, EGearSlot::Chest,EGearSlot::Gloves, EGearSlot::Boots, EGearSlot::Belt, EGearSlot::Amulet, EGearSlot::Ring };
-        
-        Def.SpawnWeight = 90.0f;
-        Def.Tiers = {
-            { 9, 5.0f,  8.0f,  1,  100.0f },
-            { 8, 9.0f,  13.0f, 10, 90.0f  },
-            { 7, 14.0f, 18.0f, 20, 80.0f  },
-            { 6, 19.0f, 24.0f, 30, 65.0f  },
-            { 5, 25.0f, 30.0f, 40, 50.0f  },
-            { 4, 31.0f, 36.0f, 50, 38.0f  },
-            { 3, 37.0f, 42.0f, 60, 26.0f  },
-            { 2, 43.0f, 48.0f, 72, 14.0f  },
-            { 1, 49.0f, 55.0f, 84, 6.0f   },
-        };
-    }
+    // --- Suffixes --------------------------------------------------------------
+    AddStatAffix(FName("Suffix_CriticalStrikeChance"), TEXT("Sharpened (+%.0f%% increased Critical Strike Chance)"), EAffixType::Suffix,
+                 EStatType::CriticalStrikeChance, EModifierApplication::Increased, FName("CritChance"), WeaponRing, 60.0f,
+                 0.10f, 0.15f, 0.89f, 1.00f, /*bIsPercent=*/true);
+    AddStatAffix(FName("Suffix_CriticalStrikeMultiplier"), TEXT("Deadly (+%.0f%% to Critical Strike Multiplier)"), EAffixType::Suffix,
+                 EStatType::CriticalStrikeMultiplier, EModifierApplication::Flat, FName("CritMulti"), WeaponRing, 60.0f,
+                 0.05f, 0.10f, 0.50f, 0.80f, /*bIsPercent=*/true);
+    AddStatAffix(FName("Suffix_AttackSpeed"), TEXT("of Haste (+%.0f%% increased Attack Speed)"), EAffixType::Suffix,
+                 EStatType::AttackSpeed, EModifierApplication::Increased, FName("AttackSpeed"), WeaponRingGloves, 70.0f,
+                 0.03f, 0.05f, 0.28f, 0.32f, /*bIsPercent=*/true);
+    AddStatAffix(FName("Suffix_CastSpeed"), TEXT("of Alacrity (+%.0f%% increased Cast Speed)"), EAffixType::Suffix,
+                 EStatType::CastSpeed, EModifierApplication::Increased, FName("CastSpeed"), WeaponRingGloves, 70.0f,
+                 0.03f, 0.05f, 0.28f, 0.32f, /*bIsPercent=*/true);
+    AddStatAffix(FName("Suffix_LifeLeech"), TEXT("of the Leech (+%.1f%% of Physical Damage Leeched as Life)"), EAffixType::Suffix,
+                 EStatType::LifeLeech, EModifierApplication::Flat, FName("LifeLeech"), WeaponGlovesRing, 50.0f,
+                 0.002f, 0.004f, 0.02f, 0.03f, /*bIsPercent=*/true);
+    AddStatAffix(FName("Suffix_ManaLeech"), TEXT("of the Siphon (+%.1f%% of Physical Damage Leeched as Mana)"), EAffixType::Suffix,
+                 EStatType::ManaLeech, EModifierApplication::Flat, FName("ManaLeech"), WeaponGlovesRing, 50.0f,
+                 0.002f, 0.004f, 0.02f, 0.03f, /*bIsPercent=*/true);
+    AddStatAffix(FName("Suffix_HealthRegen"), TEXT("of Recovery (+%.0f Life Regenerated per second)"), EAffixType::Suffix,
+                 EStatType::HealthRegen, EModifierApplication::Flat, FName("HealthRegen"), NonWeaponSlots, 80.0f,
+                 1.0f, 3.0f, 20.0f, 35.0f);
+    AddStatAffix(FName("Suffix_ManaRegen"), TEXT("of Clarity (+%.0f Mana Regenerated per second)"), EAffixType::Suffix,
+                 EStatType::ManaRegen, EModifierApplication::Flat, FName("ManaRegen"), NonWeaponSlots, 80.0f,
+                 1.0f, 2.0f, 12.0f, 20.0f);
 
     return Table;
 }
