@@ -27,9 +27,17 @@ struct FCharacterProgression
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character")
     int32 CurrentExperience = 0;
 
-    UFUNCTION(BlueprintPure, Category = "Character")
+    // NOTE: UFUNCTION is not legal inside a USTRUCT (UnrealHeaderTool only
+    // reflects functions on UCLASS/UINTERFACE types). This was previously
+    // marked UFUNCTION(BlueprintPure, ...), which would fail UHT parsing.
+    // If Blueprint access is needed, expose this via a UFUNCTION on a
+    // UCLASS (e.g. a BlueprintFunctionLibrary) that takes/returns this struct.
     int32 GetExperienceForNextLevel() const
     {
+        if (CurrentLevel >= MaximumLevel)
+        {
+            return 0; // Already at max level — nothing more needed.
+        }
         return 1000 + (CurrentLevel - 1) * 500; // Example formula for experience needed
     }
 };
@@ -173,6 +181,9 @@ struct FCharacterStats
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Resources")
     float ManaRegeneration = 1.0f;
 
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Resources")
+    float EnergyShield = 0.0f;
+
     // Damage Stats
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Damage")
     float DamagePhysical = 10.0f;
@@ -190,16 +201,31 @@ struct FCharacterStats
     float DamagePoison = 0.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Damage")
-    float CriticalStrikeChance = 5.0f;
+    float SpellDamage = 0.0f;
+
+    // NOTE: stored as a fraction (0.05 = 5%), matching CriticalStrikeMultiplier's
+    // convention below (1.5 = 150%). Format as a percentage only at display time —
+    // do NOT flip this back to percent-scale without also updating Recalculate().
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Damage")
+    float CriticalStrikeChance = 0.05f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Damage")
-    float CriticalStrikeMultiplier = 150.0f;
+    float CriticalStrikeMultiplier = 1.5f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Damage")
     float AttackSpeed = 1.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Damage")
     float CastSpeed = 1.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Damage")
+    float Accuracy = 100.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Damage")
+    float LifeLeech = 0.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Damage")
+    float ManaLeech = 0.0f;
 
     // Defense Stats
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Defense")
@@ -215,7 +241,13 @@ struct FCharacterStats
     float BlockChance = 0.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Defense")
+    float BlockAmount = 0.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Defense")
     float SpellBlockChance = 0.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Defense")
+    float DodgeChance = 0.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Defense")
     float FireResistance = 0.0f;
@@ -253,24 +285,37 @@ struct FCharacterStats
 
         MaximumHealth = Value(EStatType::Life, 100.0f + Attrs.Strength * 5.0f + Level * 15.0f);
         MaximumMana   = Value(EStatType::Mana, 50.0f + Attrs.Intelligence * 5.0f + Level * 8.0f);
+        EnergyShield  = Value(EStatType::EnergyShield, Attrs.Intelligence * 1.0f);
+
+        // Regen was previously never recalculated here and stayed frozen at its
+        // construction default regardless of Attrs/Level/modifiers.
+        LifeRegeneration = Value(EStatType::HealthRegen, MaximumHealth * 0.01f);
+        ManaRegeneration = Value(EStatType::ManaRegen, MaximumMana * 0.01f);
 
         DamagePhysical  = Value(EStatType::DamagePhysical, 10.0f + Attrs.Strength * 0.5f);
         DamageFire      = Value(EStatType::DamageFire, 0.0f);
         DamageCold      = Value(EStatType::DamageCold, 0.0f);
         DamageLightning = Value(EStatType::DamageLightning, 0.0f);
         DamagePoison    = Value(EStatType::DamagePoison, 0.0f);
+        SpellDamage     = Value(EStatType::SpellDamage, 0.0f);
 
+        // Both stored as fractions (0.05 = 5%, 1.5 = 150%) — see field comments above.
         CriticalStrikeChance     = Value(EStatType::CriticalStrikeChance, 0.05f + Attrs.Dexterity * 0.0005f);
         CriticalStrikeMultiplier = Value(EStatType::CriticalStrikeMultiplier, 1.5f);
         AttackSpeed = Value(EStatType::AttackSpeed, 1.0f);
         CastSpeed   = Value(EStatType::CastSpeed, 1.0f);
+        Accuracy    = Value(EStatType::Accuracy, 100.0f + Attrs.Dexterity * 2.0f);
+        LifeLeech   = Value(EStatType::LifeLeech, 0.0f);
+        ManaLeech   = Value(EStatType::ManaLeech, 0.0f);
 
         Armour  = Value(EStatType::Armour, Attrs.Strength * 2.0f);
         Evasion = Value(EStatType::Evasion, Attrs.Dexterity * 2.0f);
         Barrier = Value(EStatType::Barrier, Attrs.Intelligence * 2.0f);
 
         BlockChance      = Value(EStatType::BlockChance, 0.0f);
+        BlockAmount       = Value(EStatType::BlockAmount, 0.0f);
         SpellBlockChance = Value(EStatType::SpellBlock, 0.0f);
+        DodgeChance      = Value(EStatType::DodgeChance, 0.0f);
 
         FireResistance      = Value(EStatType::FireResistance, 0.0f);
         ColdResistance      = Value(EStatType::ColdResistance, 0.0f);
