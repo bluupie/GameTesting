@@ -87,7 +87,6 @@ enum class EStatType : uint8
     PoisonResistance,
     Evasion,
     BlockChance,
-    BlockAmount,
     LifeLeech,
     ManaLeech,
     EnergyShield,
@@ -241,9 +240,6 @@ struct FCharacterStats
     float BlockChance = 0.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Defense")
-    float BlockAmount = 0.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Defense")
     float SpellBlockChance = 0.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Defense")
@@ -313,7 +309,6 @@ struct FCharacterStats
         Barrier = Value(EStatType::Barrier, Attrs.Intelligence * 2.0f);
 
         BlockChance      = Value(EStatType::BlockChance, 0.0f);
-        BlockAmount       = Value(EStatType::BlockAmount, 0.0f);
         SpellBlockChance = Value(EStatType::SpellBlock, 0.0f);
         DodgeChance      = Value(EStatType::DodgeChance, 0.0f);
 
