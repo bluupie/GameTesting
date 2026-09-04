@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DataTable.h"
-#include "BaseCharacterStats.h"   // EStatType, FModifierPool, FStatModifier
+#include "CharacterStatsTypes.h"   // EStatType, FModifierPool, FStatModifier
 #include "GearAffixTypes.generated.h"
 
 // ---------------------------------------------------------------------------

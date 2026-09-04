@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DataTable.h"
-#include "BaseCharacterStats.h"
+#include "CharacterStatsTypes.h"
 #include "PassiveSkillTreeTypes.generated.h"
 
 UENUM(BlueprintType)
