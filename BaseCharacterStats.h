@@ -1,7 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "CharacterStats.generated.h"
+#include "BaseCharacterStats.generated.h"
 
 // ---------------------------------------------------------------------------
 // Character
@@ -99,7 +99,11 @@ enum class EStatType : uint8
     CooldownReduction,
     HealthRegen,
     ManaRegen,
-    AoeRadius
+    AoeRadius,
+    DamageWithSwords,
+    DamageWithAxes,
+    ProjectileDamage,
+    AdditionalProjectiles
 };
 
 // ---------------------------------------------------------------------------
@@ -162,6 +166,11 @@ USTRUCT(BlueprintType)
 struct FCharacterStats
 {
     GENERATED_BODY()
+
+    // Runtime guard used to distinguish the first stat calculation (spawn/load)
+    // from later recalculations caused by equipment or temporary effects.
+    UPROPERTY(Transient)
+    bool bHasCalculatedStats = false;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Resources")
     float MaximumHealth = 100.0f;
@@ -226,6 +235,20 @@ struct FCharacterStats
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Damage")
     float ManaLeech = 0.0f;
+
+    // Conditional combat multipliers. The combat/ability layer applies the
+    // matching value after identifying the equipped weapon or skill tags.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Damage")
+    float DamageWithSwords = 1.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Damage")
+    float DamageWithAxes = 1.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Damage")
+    float ProjectileDamage = 1.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Damage")
+    int32 AdditionalProjectiles = 0;
 
     // Defense Stats
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stats|Defense")
@@ -307,6 +330,10 @@ struct FCharacterStats
         Accuracy    = Value(EStatType::Accuracy, 100.0f + Attrs.Dexterity * 2.0f);
         LifeLeech   = Value(EStatType::LifeLeech, 0.0f);
         ManaLeech   = Value(EStatType::ManaLeech, 0.0f);
+        DamageWithSwords = Value(EStatType::DamageWithSwords, 1.0f);
+        DamageWithAxes = Value(EStatType::DamageWithAxes, 1.0f);
+        ProjectileDamage = Value(EStatType::ProjectileDamage, 1.0f);
+        AdditionalProjectiles = FMath::Max(0, FMath::RoundToInt(Value(EStatType::AdditionalProjectiles, 0.0f)));
 
         Armour  = Value(EStatType::Armour, Attrs.Strength * 2.0f);
         Evasion = Value(EStatType::Evasion, Attrs.Dexterity * 2.0f);
@@ -326,9 +353,18 @@ struct FCharacterStats
         AoeRadius         = Value(EStatType::AoeRadius, 1.0f);
         CooldownReduction = Value(EStatType::CooldownReduction, 0.0f);
 
-        // CurrentHealth/CurrentMana intentionally NOT reset here — clamp instead,
-        // so a stat recalc mid-fight doesn't fully heal/refill the player.
-        CurrentHealth = FMath::Min(CurrentHealth, MaximumHealth);
-        CurrentMana   = FMath::Min(CurrentMana, MaximumMana);
+        if (!bHasCalculatedStats)
+        {
+            // A newly created character starts with its calculated resources full.
+            CurrentHealth = MaximumHealth;
+            CurrentMana = MaximumMana;
+            bHasCalculatedStats = true;
+        }
+        else
+        {
+            // Equipment changes during combat must not heal/refill the player.
+            CurrentHealth = FMath::Clamp(CurrentHealth, 0.0f, MaximumHealth);
+            CurrentMana = FMath::Clamp(CurrentMana, 0.0f, MaximumMana);
+        }
     }
 };
