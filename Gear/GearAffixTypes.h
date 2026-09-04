@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DataTable.h"
-#include "CharacterStats.h"   // EStatType, FModifierPool, FStatModifier
+#include "BaseCharacterStats.h"   // EStatType, FModifierPool, FStatModifier
 #include "GearAffixTypes.generated.h"
 
 // ---------------------------------------------------------------------------
@@ -270,6 +270,14 @@ struct FGearItem
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item")
     int32 ItemLevel = 1;
+
+    // Which FGearBaseItem::BaseId this item was generated from, if any
+    // (see UGearBaseFunctionLibrary::GenerateGearItemFromBase). Lets the
+    // base's own innate defense value be looked back up alongside the
+    // rolled affixes — see BuildModifierPoolFromGearWithBase. Empty for
+    // items built directly via GenerateGearItem without a base.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item")
+    FName BaseItemId;
 
     // Max 3 — enforced by the generator, not the struct itself.
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item")
